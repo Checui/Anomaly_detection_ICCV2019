@@ -1,7 +1,6 @@
 import sys
 import os
 import argparse
-import numpy as np
 
 # Mock ProgressBar (if needed for your GAN_tf code)
 import types
