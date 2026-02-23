@@ -242,16 +242,19 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
     
     # generator
     plh_dropout_prob = tf.placeholder_with_default(1.0, shape=())
-    output_opt, output_appe = Generator(plh_frame_true, plh_is_training, plh_dropout_prob)
+    # USE SCALED TENSOR HERE
+    output_opt, output_appe = Generator(scaled_frame_true, plh_is_training, plh_dropout_prob)
 
     # discriminator
-    D_real, D_real_logits = Discriminator(plh_frame_true, plh_flow_true, plh_is_training, reuse=False)
-    D_fake, D_fake_logits = Discriminator(plh_frame_true, output_opt, plh_is_training, reuse=True)
+    # USE SCALED TENSOR HERE
+    D_real, D_real_logits = Discriminator(scaled_frame_true, plh_flow_true, plh_is_training, reuse=False)
+    D_fake, D_fake_logits = Discriminator(scaled_frame_true, output_opt, plh_is_training, reuse=True)
 
     # appearance loss
     dy1, dx1 = tf.image.image_gradients(output_appe)
-    dy0, dx0 = tf.image.image_gradients(plh_frame_true)
-    loss_inten = tf.reduce_mean((output_appe - plh_frame_true)**2)
+    # USE SCALED TENSOR HERE
+    dy0, dx0 = tf.image.image_gradients(scaled_frame_true)
+    loss_inten = tf.reduce_mean((output_appe - scaled_frame_true)**2)
     loss_gradi = tf.reduce_mean(tf.abs(tf.abs(dy1)-tf.abs(dy0)) + tf.abs(tf.abs(dx1)-tf.abs(dx0)))
     loss_appe = loss_inten + loss_gradi
 
