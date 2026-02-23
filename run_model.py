@@ -28,9 +28,9 @@ from data_loader import load_acdc_data, load_mm_data, load_combined_data
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, required=True, choices=['ACDC', 'MM', 'COMBINED'])
-    parser.add_argument('--acdc_dir', type=str, default='./Dataset_2')
-    parser.add_argument('--mm_dir', type=str, default='./Dataset_1/Training')
-    parser.add_argument('--mm_csv', type=str, default='./Dataset_1/211230_M&Ms_Dataset_information_diagnosis_opendataset.csv')
+    parser.add_argument('--acdc_dir', type=str, default='../Dataset_2')
+    parser.add_argument('--mm_dir', type=str, default='../Dataset_1/Training')
+    parser.add_argument('--mm_csv', type=str, default='../Dataset_1/211230_M&Ms_Dataset_information_diagnosis_opendataset.csv')
     parser.add_argument('--epochs', type=int, default=50)
     args = parser.parse_args()
 

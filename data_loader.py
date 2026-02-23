@@ -1,5 +1,5 @@
 def load_acdc_data(base_dir, target_size=(128, 192)):
-    training_dir = os.path.join(base_dir, 'database', 'training_test')
+    training_dir = os.path.join(base_dir, 'database', 'training')
     patients = sorted([d for d in os.listdir(training_dir) if os.path.isdir(os.path.join(training_dir, d))])
 
     all_images = []

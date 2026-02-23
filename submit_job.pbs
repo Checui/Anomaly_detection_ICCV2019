@@ -51,9 +51,9 @@ echo "--- Starting Model Training ---"
 
 python run_model.py \
     --dataset COMBINED \
-    --acdc_dir ./Dataset_2 \
-    --mm_dir ./Dataset_1/Training \
-    --mm_csv ./Dataset_1/211230_M\&Ms_Dataset_information_diagnosis_opendataset.csv \
+    --acdc_dir ../Dataset_2 \
+    --mm_dir ../Dataset_1/Training \
+    --mm_csv ../Dataset_1/211230_M\&Ms_Dataset_information_diagnosis_opendataset.csv \
     --epochs 100
 
 echo "--- Training finished ---"
