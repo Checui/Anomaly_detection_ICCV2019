@@ -1,0 +1,61 @@
+#!/bin/bash
+
+# -----------------------------------------------------------------------------
+# PBS Job Configuration
+# -----------------------------------------------------------------------------
+
+# Give your job a descriptive name
+#PBS -N Train_Combined_Models
+
+# Request the maximum time you think the job will take (HH:MM:SS)
+# Maximum limit on Imperial HPC is usually 72:00:00. Here we request 24 hours.
+#PBS -l walltime=24:00:00
+
+# Request resources: 1 chunk (node), 4 CPU cores, 32GB RAM, and 1 GPU
+#PBS -l select=1:ncpus=4:mem=32gb:ngpus=1
+
+# Email Notification Settings
+# 'b' = begin, 'e' = end, 'a' = abort (fail)
+# Here we request emails on End or Abort.
+#PBS -m ea
+
+# IMPORTANT: Replace this with your actual Imperial College email address!
+#PBS -M cc4525@imperial.ac.uk
+
+# -----------------------------------------------------------------------------
+# Job Execution Commands
+# -----------------------------------------------------------------------------
+
+# Navigate to the directory from which you submitted the qsub command
+# (This ensures it looks for your python scripts and datasets in the right folder)
+cd $PBS_O_WORKDIR
+
+echo "Job started on $(date)"
+echo "Running on node: $(hostname)"
+
+# Load Imperial HPC modules
+# anaconda3/personal allows you to use your own conda environments
+module load anaconda3/personal
+
+# Load the CUDA module required for your TensorFlow version 
+# (Commonly 11.2, 11.8, or 12.x depending on your TF version)
+module load cuda/11.8.0 
+
+# Activate your Python virtual environment
+# IMPORTANT: Replace 'mres_env' with the name of the conda environment you created on the HPC
+source activate mres_env
+
+# Run your Python training script
+# Note: Ensure the paths (--acdc_dir, --mm_dir, --mm_csv) perfectly match where 
+# you placed them in your ephemeral storage relative to this script.
+echo "--- Starting Model Training ---"
+
+python run_model.py \
+    --dataset COMBINED \
+    --acdc_dir ./Dataset_2 \
+    --mm_dir ./Dataset_1/Training \
+    --mm_csv ./Dataset_1/211230_M\&Ms_Dataset_information_diagnosis_opendataset.csv \
+    --epochs 100
+
+echo "--- Training finished ---"
+echo "Job finished on $(date)"

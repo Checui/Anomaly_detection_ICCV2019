@@ -1,0 +1,11 @@
+tensorflow==2.12.0
+numpy
+matplotlib
+scipy
+opencv-python
+scikit-learn
+scikit-image
+ipykernel
+imageio
+SimpleITK
+pandas

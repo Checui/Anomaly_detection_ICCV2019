@@ -1,0 +1,40 @@
+# ==========================================
+# 1. Virtual Environments (Don't upload your whole Python setup)
+# ==========================================
+venv/
+env/
+.env
+
+# ==========================================
+# 2. Datasets and Images (Don't upload massive data files)
+# ==========================================
+*.csv
+*.dat
+*.npy
+*.npz
+datasets/
+data/
+
+# ==========================================
+# 3. Machine Learning Models (Don't upload heavy trained weights)
+# ==========================================
+*.pth      # PyTorch models
+*.pt
+*.h5       # TensorFlow/Keras models
+*.keras
+generated/
+training_saver/
+
+# ==========================================
+# 4. Python Compiled Files
+# ==========================================
+__pycache__/
+*.
+
+# ==========================================
+# 6. OS & Editor Files (Keeps it clean for other people)
+# ==========================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
