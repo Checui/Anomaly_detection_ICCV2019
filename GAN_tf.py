@@ -335,8 +335,11 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 if np.isnan(curr_D_loss) or np.isnan(curr_G_loss) or np.isnan(curr_loss_appe) or np.isnan(curr_loss_opt):
                     return
                 losses = np.concatenate((losses, [[curr_D_loss, curr_G_loss, curr_loss_appe, curr_loss_opt]]), axis=0)
-        saver.save(sess, './training_saver/%s/model_ckpt_%d.ckpt' % (dataset_name, i+1))
-        np.savetxt('./training_saver/%s/train_loss_%d.txt' % (dataset_name, i+1), losses, delimiter=',')
+            # Save checkpoint after every completed epoch
+            os.makedirs('./training_saver/%s' % dataset_name, exist_ok=True)
+            saver.save(sess, './training_saver/%s/model_ckpt_%d.ckpt' % (dataset_name, i+1))
+            np.savetxt('./training_saver/%s/train_loss_%d.txt' % (dataset_name, i+1), losses, delimiter=',')
+            print('Checkpoint saved for epoch %d' % (i+1))
 
 
 def test_Unet_naive_with_batch_norm(test_images, test_flows, h, w, dataset, sequence_n_frame,
