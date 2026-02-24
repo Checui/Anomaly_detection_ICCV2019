@@ -287,7 +287,8 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
 
     #
     saver = tf.train.Saver(max_to_keep=30)
-    with tf.Session() as sess:
+    config = tf.ConfigProto(log_device_placement=True)
+    with tf.Session(config=config) as sess:
         losses = np.array([], dtype=np.float32).reshape((0, 4))
         sess.run(init_op)
         if start_model_idx > 0:
