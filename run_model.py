@@ -59,7 +59,7 @@ if __name__ == "__main__":
             training_flows=flows,
             max_epoch=args.epochs,
             dataset_name=dataset_name,
-            batch_size=4
+            batch_size=16
         )
         print(f"Training complete for {args.dataset}.")
     else:
