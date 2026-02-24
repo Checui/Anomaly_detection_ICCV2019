@@ -12,7 +12,7 @@
 #PBS -l walltime=24:00:00
 
 # Request resources: 1 chunk (node), 4 CPU cores, 32GB RAM, and 1 GPU
-#PBS -l select=1:ncpus=4:mem=32gb:ngpus=1
+#PBS -l select=1:ncpus=8:mem=64gb:ngpus=1
 
 # Email Notification Settings
 # 'b' = begin, 'e' = end, 'a' = abort (fail)
