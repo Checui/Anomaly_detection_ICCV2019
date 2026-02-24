@@ -292,7 +292,8 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
         sess.run(init_op)
         if start_model_idx > 0:
             saver.restore(sess, './training_saver/%s/model_ckpt_%d.ckpt' % (dataset_name, start_model_idx))
-            losses = np.loadtxt('./training_saver/%s/train_loss_%d.txt' % (dataset_name, start_model_idx), delimiter=',')
+            # Added .reshape((-1, 4)) to prevent 1D array crashes when resuming from exactly epoch 1
+            losses = np.loadtxt('./training_saver/%s/train_loss_%d.txt' % (dataset_name, start_model_idx), delimiter=',').reshape((-1, 4))
         # define log path for tensorboard
         tensorboard_path = './training_saver/%s/logs/2/train' % (dataset_name)
         if not os.path.exists(tensorboard_path):
