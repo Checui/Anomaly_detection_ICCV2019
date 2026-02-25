@@ -195,8 +195,9 @@ def calc_anomaly_score_one_frame(frame_true, frame_hat, flow_true, flow_hat, thr
         PSNR_X = 10*np.log10(np.max(item_hat)**2/np.mean(squared_error))
         PSNR_inv = np.max(item_hat)**2 * np.mean(squared_error)
         PSNR = 10*np.log10(max_val_hat**2/np.mean(squared_error))
+        is_multichannel = len(item_true.shape) == 3 and item_true.shape[-1] > 1
         SSIM = ssim(item_true, item_hat, data_range=np.max([item_true, item_hat])-np.min([item_true, item_hat]),
-                    multichannel=len(item_true.shape) == 3 and item_true.shape[-1] > 1)
+                    channel_axis=-1 if is_multichannel else None)
         stat_MSE = np.mean(squared_error)
         stat_maxSE = np.max(squared_error)
         stat_std = np.std(squared_error)

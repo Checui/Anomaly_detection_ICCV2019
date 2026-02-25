@@ -350,15 +350,23 @@ def test_Unet_naive_with_batch_norm(test_images, test_flows, h, w, dataset, sequ
     assert len(test_images) == len(test_flows)
     assert len(test_images) == sequence_n_frame[clip_idx]
 
-    test_images /= 0.5
-    test_images -= 1.
+    # FIX 2: Prevent memory leaks from graph bloat
+    tf.reset_default_graph()
+
+    # FIX 1: Do not modify test_images in-place. 
+    # Removed: test_images /= 0.5 and test_images -= 1.
 
     plh_frame_true = tf.placeholder(tf.float32, shape=[None, h, w, 3])
     plh_is_training = tf.placeholder(tf.bool)
+    
+    # FIX 1: Scale inside the graph, matching the training function
+    scaled_frame_true = (plh_frame_true / 0.5) - 1.0
 
     # generator
     plh_dropout_prob = tf.placeholder_with_default(1.0, shape=())
-    output_opt, output_appe = Generator(plh_frame_true, plh_is_training, plh_dropout_prob)
+    
+    # Pass the scaled tensor to the Generator
+    output_opt, output_appe = Generator(scaled_frame_true, plh_is_training, plh_dropout_prob)
 
     saver = tf.train.Saver(max_to_keep=20)
 
@@ -368,7 +376,7 @@ def test_Unet_naive_with_batch_norm(test_images, test_flows, h, w, dataset, sequ
     with tf.Session() as sess:
         saved_model_file = './training_saver/%s/model_ckpt_%d.ckpt' % (dataset['name'], model_idx)
         saver.restore(sess, saved_model_file)
-        #
+        
         saved_data_path = './training_saver/%s/output_%s/%d_epoch' % (dataset['name'], 'test' if using_test_data else 'train', model_idx)
         if not os.path.exists(saved_data_path):
             pathlib.Path(saved_data_path).mkdir(parents=True, exist_ok=True)
@@ -379,21 +387,22 @@ def test_Unet_naive_with_batch_norm(test_images, test_flows, h, w, dataset, sequ
             return
 
         batch_idx = np.array_split(np.arange(len(test_images)), np.ceil(len(test_images)/batch_size))
-        #
+        
         progress = ProgressBar(len(batch_idx), fmt=ProgressBar.FULL)
         for j in range(len(batch_idx)):
             progress.current += 1
             progress()
+            # Feed the RAW [0, 1] test_images. The graph scales them automatically now.
             saved_out_appes[batch_idx[j]], saved_out_flows[batch_idx[j]] = \
                 sess.run([output_appe, output_opt],
                          feed_dict={plh_frame_true: test_images[batch_idx[j]],
                                     plh_is_training: False,
                                     plh_dropout_prob: 1.0})
+            
             saved_out_appes[batch_idx[j]] = 0.5*(saved_out_appes[batch_idx[j]] + 1)
         progress.done()
 
     np.savez_compressed(saved_data_file, image=saved_out_appes, flow=saved_out_flows)
-
 
 def visualize_layers_filters(img_paths, test_images, h, w, dataset, layer_idx, model_idx=20):
     def convert_to_visualize(img, only_clip=False, gamma=None):
