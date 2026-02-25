@@ -39,7 +39,7 @@ source ~/miniconda/bin/activate
 # Load the CUDA module required for your TensorFlow version 
 # (Commonly 11.2, 11.8, or 12.x depending on your TF version)
 module load CUDA/11.8.0
-conda install -c conda-forge cudnn=8.6.0
+conda install -c conda-forge cudatoolkit=11.8.0 cudnn -y
 
 # Activate your Python virtual environment
 # IMPORTANT: Replace 'mres_env' with the name of the conda environment you created on the HPC
