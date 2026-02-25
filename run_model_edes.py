@@ -86,6 +86,9 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path, target_size=(1
         except (KeyError, ValueError) as e:
             print(f"Missing ED/ES in {p}: {e}")
             continue
+        if ed_idx == es_idx:
+            print(f"Skipping ACDC {p}: ED and ES frames are identical ({ed_idx})")
+            continue
 
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
         if not os.path.exists(nii_path):
@@ -160,6 +163,10 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path, target_size=(1
         if img_arr.ndim != 4:
             continue
         T, Z, _, _ = img_arr.shape
+
+        if ed_idx == es_idx:
+            print(f"Skipping M&M {subject_id}: ED and ES frames are identical ({ed_idx})")
+            continue
 
         if es_idx >= T or ed_idx >= T:
             print(f"Skipping {subject_id}: ED={ed_idx} or ES={es_idx} out of range T={T}")
