@@ -14,6 +14,9 @@ from utils import load_images_and_flow_1clip
 
 from ProgressBar import ProgressBar
 
+# W&B Integration
+import wandb
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 p_keep = 0.7
@@ -69,6 +72,11 @@ def sample_images(dataset_name, in_flows, in_frames, out_flows, out_frames, epoc
             axs[i, j].axis('off')
             cnt += 1
     fig.savefig("generated/%s/%d_%d.png" % (dataset_name, epoch, batch_i))
+    # [NEW CODE] Upload the Matplotlib figure directly to your W&B dashboard
+    wandb.log({
+        "GAN_Generated_Images": wandb.Image(fig), 
+        "Epoch": epoch
+    })
     plt.close()
 
 
@@ -223,7 +231,19 @@ def Discriminator(frame_true, flow_hat, is_training, reuse=False, return_middle_
 
 
 def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch, dataset_name='', start_model_idx=0, batch_size=16):
-
+    wandb.init(
+        project="mres-ICCV2019", # The overall name of your MRes project
+        name=f"run_epoch_{start_model_idx}_to_{max_epoch}", # Names this specific run
+        config={
+            "batch_size": batch_size,
+            "max_epoch": max_epoch,
+            "dataset_name": dataset_name,
+            "start_model_idx": start_model_idx,
+            "optimizer": "Adam",
+            "learning_rate_D": 0.00002, # Hardcoded in your graph, good to track here
+            "learning_rate_G": 0.0002
+        }
+    )
     print('no. of images = %s' % len(training_images))
     assert len(training_images) == len(training_flows)
     h, w = training_images.shape[1:3]
@@ -313,7 +333,7 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                                                    feed_dict={plh_frame_true: training_images[batch_idx[j]],
                                                               plh_flow_true: training_flows[batch_idx[j]],
                                                               plh_is_training: True})
-                if j % 10 == 0:
+                if j % 50 == 0:
                     _, curr_G_loss, curr_loss_appe, curr_loss_opt, curr_gen_frames, curr_gen_flows, summary = \
                                     sess.run([G_optimizer, G_loss, loss_appe, loss_opt, output_appe[:4], output_opt[:4], merge],
                                              feed_dict={plh_frame_true: training_images[batch_idx[j]],
@@ -334,6 +354,14 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 train_writer.flush()
                 print('epoch %d/%d, iter %3d/%d: D_loss = %.4f, G_loss = %.4f, loss_appe = %.4f, loss_flow = %.4f'
                       % (i+1, max_epoch, j+1, len(batch_idx), curr_D_loss, curr_G_loss, curr_loss_appe, curr_loss_opt))
+                      # [NEW CODE] Stream metrics to the Weights & Biases dashboard
+                wandb.log({
+                    "Epoch": i + 1,
+                    "Discriminator_Loss": curr_D_loss,
+                    "Generator_Loss": curr_G_loss,
+                    "Appearance_Loss": curr_loss_appe,
+                    "Optical_Flow_Loss": curr_loss_opt
+                })
                 if np.isnan(curr_D_loss) or np.isnan(curr_G_loss) or np.isnan(curr_loss_appe) or np.isnan(curr_loss_opt):
                     return
                 losses = np.concatenate((losses, [[curr_D_loss, curr_G_loss, curr_loss_appe, curr_loss_opt]]), axis=0)
@@ -341,6 +369,8 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
             os.makedirs('./training_saver/%s' % dataset_name, exist_ok=True)
             saver.save(sess, './training_saver/%s/model_ckpt_%d.ckpt' % (dataset_name, i+1))
             np.savetxt('./training_saver/%s/train_loss_%d.txt' % (dataset_name, i+1), losses, delimiter=',')
+            # [NEW CODE] Mark the W&B run as completed
+            wandb.finish()  
             print('Checkpoint saved for epoch %d' % (i+1))
 
 
