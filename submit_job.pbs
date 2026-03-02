@@ -56,7 +56,7 @@ python run_model_edes.py \
     --acdc_dir ../Dataset_2 \
     --mm_dir ../Dataset_1/Training \
     --mm_csv ../Dataset_1/211230_M\&Ms_Dataset_information_diagnosis_opendataset.csv \
-    --epochs 20
+    --epochs 40
 
 echo "--- Training finished ---"
 echo "Job finished on $(date)"

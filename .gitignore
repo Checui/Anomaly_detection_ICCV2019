@@ -37,4 +37,5 @@ __pycache__/
 .DS_Store
 Thumbs.db
 .vscode/
-.idea/
+.idea/*.e[0-9]*
+*.o[0-9]*
