@@ -40,6 +40,8 @@ if __name__ == "__main__":
     parser.add_argument('--mm_val_dir', type=str, default='../Dataset_1/Validation')
     parser.add_argument('--mm_csv', type=str, default='../Dataset_1/211230_M&Ms_Dataset_information_diagnosis_opendataset.csv')
     parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--start_epoch', type=int, default=0, help='Epoch to resume training from')
+
     args = parser.parse_args()
 
     # 1. Load the TRAINING data based on the argument
@@ -97,6 +99,7 @@ if __name__ == "__main__":
             training_flows=flows,
             max_epoch=args.epochs,
             dataset_name=dataset_name,
+            start_model_idx=args.start_epoch,
             batch_size=4,
             val_images=val_images,
             val_flows=val_flows

@@ -317,6 +317,10 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
             saver.restore(sess, './training_saver/%s/model_ckpt_%d.ckpt' % (dataset_name, start_model_idx))
             # Added .reshape((-1, 4)) to prevent 1D array crashes when resuming from exactly epoch 1
             losses = np.loadtxt('./training_saver/%s/train_loss_%d.txt' % (dataset_name, start_model_idx), delimiter=',').reshape((-1, 4))
+            # --- ADD THESE LINES TO TRACK OLD VAL LOSS ---
+            val_loss_path = './training_saver/%s/val_loss_%d.txt' % (dataset_name, start_model_idx)
+            if os.path.exists(val_loss_path):
+                val_losses = np.loadtxt(val_loss_path, delimiter=',').reshape((-1, 2))
         # define log path for tensorboard
         tensorboard_path = './training_saver/%s/logs/2/train' % (dataset_name)
         if not os.path.exists(tensorboard_path):
@@ -356,14 +360,17 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 train_writer.flush()
                 print('epoch %d/%d, iter %3d/%d: D_loss = %.4f, G_loss = %.4f, loss_appe = %.4f, loss_flow = %.4f'
                       % (i+1, max_epoch, j+1, len(batch_idx), curr_D_loss, curr_G_loss, curr_loss_appe, curr_loss_opt))
-                      # [NEW CODE] Stream metrics to the Weights & Biases dashboard
+                # [NEW CODE] Stream metrics to the Weights & Biases dashboard
+                # Calculate the exact overall step across all epochs
+                global_step = i * len(batch_idx) + j
+                
                 wandb.log({
                     "Epoch": i + 1,
                     "Discriminator_Loss": curr_D_loss,
                     "Generator_Loss": curr_G_loss,
                     "Appearance_Loss": curr_loss_appe,
                     "Optical_Flow_Loss": curr_loss_opt
-                })
+                }, step=global_step) # <-- Add step=global_step here
                 if np.isnan(curr_D_loss) or np.isnan(curr_G_loss) or np.isnan(curr_loss_appe) or np.isnan(curr_loss_opt):
                     return
                 losses = np.concatenate((losses, [[curr_D_loss, curr_G_loss, curr_loss_appe, curr_loss_opt]]), axis=0)
@@ -399,11 +406,13 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 print('  [VAL] epoch %d/%d: val_loss_appe = %.4f, val_loss_flow = %.4f'
                       % (i+1, max_epoch, epoch_val_appe, epoch_val_opt))
 
+                global_step = (i + 1) * len(batch_idx)
+                
                 wandb.log({
                     "Epoch": i + 1,
                     "Val_Appearance_Loss": epoch_val_appe,
                     "Val_Optical_Flow_Loss": epoch_val_opt
-                })
+                }, step=global_step)
                 val_losses = np.concatenate(
                     (val_losses, [[epoch_val_appe, epoch_val_opt]]), axis=0
                 )
