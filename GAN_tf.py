@@ -230,7 +230,8 @@ def Discriminator(frame_true, flow_hat, is_training, reuse=False, return_middle_
         return tf.nn.sigmoid(h4), h4
 
 
-def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch, dataset_name='', start_model_idx=0, batch_size=16):
+def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch, dataset_name='', start_model_idx=0, batch_size=16,
+                                     val_images=None, val_flows=None):
     wandb.init(
         project="mres-ICCV2019", # The overall name of your MRes project
         name=f"run_epoch_{start_model_idx}_to_{max_epoch}", # Names this specific run
@@ -310,6 +311,7 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
     config = tf.ConfigProto(log_device_placement=True)
     with tf.Session(config=config) as sess:
         losses = np.array([], dtype=np.float32).reshape((0, 4))
+        val_losses = np.array([], dtype=np.float32).reshape((0, 2))
         sess.run(init_op)
         if start_model_idx > 0:
             saver.restore(sess, './training_saver/%s/model_ckpt_%d.ckpt' % (dataset_name, start_model_idx))
@@ -369,9 +371,51 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
             os.makedirs('./training_saver/%s' % dataset_name, exist_ok=True)
             saver.save(sess, './training_saver/%s/model_ckpt_%d.ckpt' % (dataset_name, i+1))
             np.savetxt('./training_saver/%s/train_loss_%d.txt' % (dataset_name, i+1), losses, delimiter=',')
-            # [NEW CODE] Mark the W&B run as completed
-            wandb.finish()  
-            print('Checkpoint saved for epoch %d' % (i+1))
+
+            # ── Validation step ──────────────────────────────────────────
+            if val_images is not None and val_flows is not None and len(val_images) > 0:
+                val_batch_idx = np.array_split(
+                    np.arange(len(val_images)),
+                    max(1, int(np.ceil(len(val_images) / batch_size)))
+                )
+                val_appe_losses = []
+                val_opt_losses  = []
+                for vb in val_batch_idx:
+                    vb_loss_appe, vb_loss_opt = sess.run(
+                        [loss_appe, loss_opt],
+                        feed_dict={
+                            plh_frame_true: val_images[vb],
+                            plh_flow_true:  val_flows[vb],
+                            plh_is_training: False,
+                            plh_dropout_prob: 1.0
+                        }
+                    )
+                    val_appe_losses.append(vb_loss_appe * len(vb))
+                    val_opt_losses.append(vb_loss_opt * len(vb))
+
+                epoch_val_appe = np.sum(val_appe_losses) / len(val_images)
+                epoch_val_opt  = np.sum(val_opt_losses)  / len(val_images)
+
+                print('  [VAL] epoch %d/%d: val_loss_appe = %.4f, val_loss_flow = %.4f'
+                      % (i+1, max_epoch, epoch_val_appe, epoch_val_opt))
+
+                wandb.log({
+                    "Epoch": i + 1,
+                    "Val_Appearance_Loss": epoch_val_appe,
+                    "Val_Optical_Flow_Loss": epoch_val_opt
+                })
+                val_losses = np.concatenate(
+                    (val_losses, [[epoch_val_appe, epoch_val_opt]]), axis=0
+                )
+                np.savetxt(
+                    './training_saver/%s/val_loss_%d.txt' % (dataset_name, i+1),
+                    val_losses, delimiter=','
+                )
+            # ─────────────────────────────────────────────────────────────
+
+        # [NEW CODE] Mark the W&B run as completed
+        wandb.finish()  
+        print('Checkpoint saved for epoch %d' % (i+1))
 
 
 def test_Unet_naive_with_batch_norm(test_images, test_flows, h, w, dataset, sequence_n_frame,
@@ -449,15 +493,22 @@ def visualize_layers_filters(img_paths, test_images, h, w, dataset, layer_idx, m
     assert len(img_paths) == len(test_images)
     print(test_images.shape)
 
-    test_images /= 0.5
-    test_images -= 1.
+    # [REMOVED] Manual Numpy scaling
+    # test_images /= 0.5
+    # test_images -= 1.
 
     plh_frame_true = tf.placeholder(tf.float32, shape=[None, h, w, 3])
     plh_is_training = tf.placeholder(tf.bool)
 
+    # [ADDED] Scale inside the TensorFlow graph
+    scaled_frame_true = (plh_frame_true / 0.5) - 1.0
+
     # generator
     plh_dropout_prob = tf.placeholder_with_default(1.0, shape=())
-    output_opt, output_appe, layers = Generator(plh_frame_true, plh_is_training, plh_dropout_prob, return_layers=True)
+    
+    # [FIXED] Pass the scaled tensor to the Generator
+    output_opt, output_appe, layers = Generator(scaled_frame_true, plh_is_training, plh_dropout_prob, return_layers=True)
+    
     if layer_idx is not None:
         layers = layers[layer_idx]
 
@@ -468,13 +519,18 @@ def visualize_layers_filters(img_paths, test_images, h, w, dataset, layer_idx, m
     with tf.Session() as sess:
         saved_model_file = './training_saver/%s/model_ckpt_%d.ckpt' % (dataset['name'], model_idx)
         saver.restore(sess, saved_model_file)
-        #
+        
+        # Feed the raw [0, 1] test_images; the graph handles the scaling now
         output_frames, output_optics, output_layers = sess.run([output_appe, output_opt, layers],
                                                                feed_dict={plh_frame_true: test_images,
                                                                           plh_is_training: False,
                                                                           plh_dropout_prob: 1.0})
-        test_images = test_images * 0.5 + 0.5
-        output_frames = output_frames * 0.5 + 0.5
+        
+        # [REMOVED] test_images = test_images * 0.5 + 0.5 (No longer needed since we didn't scale the numpy array)
+        
+        # Generator output is still [-1, 1], so we keep this to map it back to [0, 1] for visualization
+        output_frames = output_frames * 0.5 + 0.5 
+        
         print('output_layers:', len(output_layers), [x.shape for x in output_layers])
         for k in range(len(test_images)):
             out_dict = dict()
@@ -502,12 +558,12 @@ def visualize_layers_filters(img_paths, test_images, h, w, dataset, layer_idx, m
 
 
 def visualize_epoch_output(h, w, dataset, frame_idx, clip_idx, model_idx, show_output=False):
-    #
+    
     image_data, flow_data = load_images_and_flow_1clip(dataset, clip_idx, train=False)
     assert frame_idx in np.arange(len(flow_data))
     test_image = image_data[frame_idx]
     test_flow = flow_data[frame_idx]
-    #
+    
     saved_data_file = 'img_samples/out_each_epoch/%s_clip_%d_frame_%d.mat' % (dataset['name'], clip_idx, frame_idx)
     if os.path.isfile(saved_data_file):
         data = loadmat(saved_data_file)
@@ -515,29 +571,40 @@ def visualize_epoch_output(h, w, dataset, frame_idx, clip_idx, model_idx, show_o
         data = dict()
         data['appe'] = test_image
         data['flow'] = test_flow
-    #
-    test_image /= 0.5
-    test_image -= 1.
+        
+    # [REMOVED] Manual Numpy scaling
+    # test_image /= 0.5
+    # test_image -= 1.
 
     plh_frame_true = tf.placeholder(tf.float32, shape=[None, h, w, 3])
     plh_is_training = tf.placeholder(tf.bool)
 
+    # [ADDED] Scale inside the TensorFlow graph
+    scaled_frame_true = (plh_frame_true / 0.5) - 1.0
+
     # generator
     plh_dropout_prob = tf.placeholder_with_default(1.0, shape=())
-    output_opt, output_appe = Generator(plh_frame_true, plh_is_training, plh_dropout_prob)
+    
+    # [FIXED] Pass the scaled tensor to the Generator
+    output_opt, output_appe = Generator(scaled_frame_true, plh_is_training, plh_dropout_prob)
 
     saver = tf.train.Saver(max_to_keep=20)
     with tf.Session() as sess:
         saved_model_file = './training_saver/%s/model_ckpt_%d.ckpt' % (dataset['name'], model_idx)
         saver.restore(sess, saved_model_file)
-        #
+        
+        # Feed the raw [0, 1] test_image
         output_frame, output_optic = sess.run([output_appe, output_opt],
                                               feed_dict={plh_frame_true: [test_image],
                                                          plh_is_training: False,
                                                          plh_dropout_prob: 1.0})
-        test_image = test_image * 0.5 + 0.5
+                                                         
+        # [REMOVED] test_image = test_image * 0.5 + 0.5 (No longer needed)
+        
+        # Generator output is still [-1, 1], so map back to [0, 1]
         output_frame = output_frame[0] * 0.5 + 0.5
         output_optic = output_optic[0]
+        
         print(model_idx, output_frame.shape)
         if show_output:
             plt.figure()
@@ -546,6 +613,7 @@ def visualize_epoch_output(h, w, dataset, frame_idx, clip_idx, model_idx, show_o
             # plt.subplot(223), plt.imshow(flow_to_color(test_flow))
             # plt.subplot(224), plt.imshow(flow_to_color(output_optic))
             plt.show()
+            
         data['appe_%d' % model_idx] = output_frame
         data['flow_%d' % model_idx] = output_optic
         savemat(saved_data_file, data)
