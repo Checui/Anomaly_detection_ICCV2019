@@ -100,7 +100,7 @@ if __name__ == "__main__":
             max_epoch=args.epochs,
             dataset_name=dataset_name,
             start_model_idx=args.start_epoch,
-            batch_size=4,
+            batch_size=16,
             val_images=val_images,
             val_flows=val_flows
         )
