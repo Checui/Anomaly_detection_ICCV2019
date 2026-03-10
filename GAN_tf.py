@@ -231,7 +231,7 @@ def Discriminator(frame_true, flow_hat, is_training, reuse=False, return_middle_
 
 
 def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch, dataset_name='', start_model_idx=0, batch_size=16,
-                                     val_images=None, val_flows=None):
+                                     val_images=None, val_flows=None, val_labels=None):
     wandb.init(
         project="mres-ICCV2019", # The overall name of your MRes project
         name=f"run_epoch_{start_model_idx}_to_{max_epoch}", # Names this specific run
@@ -311,16 +311,31 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
     config = tf.ConfigProto(log_device_placement=True)
     with tf.Session(config=config) as sess:
         losses = np.array([], dtype=np.float32).reshape((0, 4))
-        val_losses = np.array([], dtype=np.float32).reshape((0, 2))
+        val_losses = np.array([], dtype=np.float32).reshape((0, 6))
         sess.run(init_op)
         if start_model_idx > 0:
             saver.restore(sess, './training_saver/%s/model_ckpt_%d.ckpt' % (dataset_name, start_model_idx))
-            # Added .reshape((-1, 4)) to prevent 1D array crashes when resuming from exactly epoch 1
-            losses = np.loadtxt('./training_saver/%s/train_loss_%d.txt' % (dataset_name, start_model_idx), delimiter=',').reshape((-1, 4))
-            # --- ADD THESE LINES TO TRACK OLD VAL LOSS ---
+            
+            # Use ndmin=2 to guarantee a 2D array, even if there's only 1 epoch of data saved
+            loss_path = './training_saver/%s/train_loss_%d.txt' % (dataset_name, start_model_idx)
+            if os.path.exists(loss_path):
+                # We also add a fallback just in case the file exists but is completely empty
+                try:
+                    losses = np.loadtxt(loss_path, delimiter=',', ndmin=2)
+                except UserWarning: # Catches "Empty input file" warnings
+                    losses = np.empty((0, 4), dtype=np.float32)
+
+            # --- TRACK OLD VAL LOSS ---
             val_loss_path = './training_saver/%s/val_loss_%d.txt' % (dataset_name, start_model_idx)
             if os.path.exists(val_loss_path):
-                val_losses = np.loadtxt(val_loss_path, delimiter=',').reshape((-1, 2))
+                try:
+                    val_losses = np.loadtxt(val_loss_path, delimiter=',', ndmin=2)
+                    # Handle migration from old 2-column format to new 6-column
+                    if val_losses.shape[1] == 2:
+                        val_losses = np.hstack([val_losses, np.full((len(val_losses), 4), np.nan)])
+                except UserWarning:
+                    val_losses = np.empty((0, 6), dtype=np.float32)
+                    
         # define log path for tensorboard
         tensorboard_path = './training_saver/%s/logs/2/train' % (dataset_name)
         if not os.path.exists(tensorboard_path):
@@ -346,7 +361,8 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                                                         plh_flow_true: training_flows[batch_idx[j]],
                                                         plh_is_training: True,
                                                         plh_dropout_prob: p_keep})
-                    sample_images(dataset_name, training_flows[batch_idx[j][:4]], training_images[batch_idx[j][:4]],
+                    scaled_input_samples = (training_images[batch_idx[j][:4]] / 0.5) - 1.0
+                    sample_images(dataset_name, training_flows[batch_idx[j][:4]], scaled_input_samples,
                                   curr_gen_flows, curr_gen_frames, i, j)
 
                 else:
@@ -385,8 +401,10 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                     np.arange(len(val_images)),
                     max(1, int(np.ceil(len(val_images) / batch_size)))
                 )
-                val_appe_losses = []
-                val_opt_losses  = []
+                # Collect per-sample losses for healthy/unhealthy split
+                per_sample_appe = np.zeros(len(val_images))
+                per_sample_opt  = np.zeros(len(val_images))
+
                 for vb in val_batch_idx:
                     vb_loss_appe, vb_loss_opt = sess.run(
                         [loss_appe, loss_opt],
@@ -397,24 +415,57 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                             plh_dropout_prob: 1.0
                         }
                     )
-                    val_appe_losses.append(vb_loss_appe * len(vb))
-                    val_opt_losses.append(vb_loss_opt * len(vb))
+                    # Store batch-mean loss for each sample in batch
+                    per_sample_appe[vb] = vb_loss_appe
+                    per_sample_opt[vb]  = vb_loss_opt
 
-                epoch_val_appe = np.sum(val_appe_losses) / len(val_images)
-                epoch_val_opt  = np.sum(val_opt_losses)  / len(val_images)
+                # ── Combined loss ────────────────────────────────────────
+                epoch_val_appe = np.mean(per_sample_appe)
+                epoch_val_opt  = np.mean(per_sample_opt)
 
                 print('  [VAL] epoch %d/%d: val_loss_appe = %.4f, val_loss_flow = %.4f'
                       % (i+1, max_epoch, epoch_val_appe, epoch_val_opt))
 
+                # ── Healthy / Unhealthy split ────────────────────────────
+                val_healthy_appe = val_healthy_opt = np.nan
+                val_unhealthy_appe = val_unhealthy_opt = np.nan
+
+                if val_labels is not None and len(val_labels) == len(val_images):
+                    labels_arr = np.array(val_labels)
+                    healthy_mask   = (labels_arr == 'NOR')
+                    unhealthy_mask = ~healthy_mask
+
+                    if np.any(healthy_mask):
+                        val_healthy_appe = np.mean(per_sample_appe[healthy_mask])
+                        val_healthy_opt  = np.mean(per_sample_opt[healthy_mask])
+                        print('  [VAL-Healthy]   appe = %.4f, flow = %.4f  (%d samples)'
+                              % (val_healthy_appe, val_healthy_opt, np.sum(healthy_mask)))
+
+                    if np.any(unhealthy_mask):
+                        val_unhealthy_appe = np.mean(per_sample_appe[unhealthy_mask])
+                        val_unhealthy_opt  = np.mean(per_sample_opt[unhealthy_mask])
+                        print('  [VAL-Unhealthy] appe = %.4f, flow = %.4f  (%d samples)'
+                              % (val_unhealthy_appe, val_unhealthy_opt, np.sum(unhealthy_mask)))
+
                 global_step = (i + 1) * len(batch_idx)
-                
-                wandb.log({
+
+                log_dict = {
                     "Epoch": i + 1,
                     "Val_Appearance_Loss": epoch_val_appe,
-                    "Val_Optical_Flow_Loss": epoch_val_opt
-                }, step=global_step)
+                    "Val_Optical_Flow_Loss": epoch_val_opt,
+                }
+                if not np.isnan(val_healthy_appe):
+                    log_dict["Val_Healthy_Appearance_Loss"] = val_healthy_appe
+                    log_dict["Val_Healthy_Flow_Loss"]       = val_healthy_opt
+                if not np.isnan(val_unhealthy_appe):
+                    log_dict["Val_Unhealthy_Appearance_Loss"] = val_unhealthy_appe
+                    log_dict["Val_Unhealthy_Flow_Loss"]       = val_unhealthy_opt
+                wandb.log(log_dict, step=global_step)
+
                 val_losses = np.concatenate(
-                    (val_losses, [[epoch_val_appe, epoch_val_opt]]), axis=0
+                    (val_losses, [[epoch_val_appe, epoch_val_opt,
+                                   val_healthy_appe, val_healthy_opt,
+                                   val_unhealthy_appe, val_unhealthy_opt]]), axis=0
                 )
                 np.savetxt(
                     './training_saver/%s/val_loss_%d.txt' % (dataset_name, i+1),

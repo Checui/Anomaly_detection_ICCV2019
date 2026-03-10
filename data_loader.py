@@ -339,7 +339,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             continue
 
         try:
-            ed_idx = int(info['ED'])
+            ed_idx = int(info['ED']) 
             es_idx = int(info['ES'])
         except (KeyError, ValueError) as e:
             print(f"Missing ED/ES in {p}: {e}")

@@ -77,15 +77,19 @@ if __name__ == "__main__":
     if len(acdc_val_images) > 0 and len(mm_val_images) > 0:
         val_images = np.concatenate([acdc_val_images, mm_val_images], axis=0)
         val_flows  = np.concatenate([acdc_val_flows,  mm_val_flows],  axis=0)
+        val_labels = acdc_val_labels + mm_val_labels
     elif len(acdc_val_images) > 0:
-        val_images, val_flows = acdc_val_images, acdc_val_flows
+        val_images, val_flows, val_labels = acdc_val_images, acdc_val_flows, acdc_val_labels
     elif len(mm_val_images) > 0:
-        val_images, val_flows = mm_val_images, mm_val_flows
+        val_images, val_flows, val_labels = mm_val_images, mm_val_flows, mm_val_labels
     else:
-        val_images, val_flows = None, None
+        val_images, val_flows, val_labels = None, None, None
 
     if val_images is not None:
+        from collections import Counter
+        lbl_counts = Counter(val_labels)
         print(f"Combined validation: {len(val_images)} samples")
+        print(f"  Healthy (NOR): {lbl_counts.get('NOR', 0)}, Unhealthy: {sum(v for k,v in lbl_counts.items() if k != 'NOR')}")
     else:
         print("WARNING: No validation data loaded!")
 
@@ -102,7 +106,8 @@ if __name__ == "__main__":
             start_model_idx=args.start_epoch,
             batch_size=4,
             val_images=val_images,
-            val_flows=val_flows
+            val_flows=val_flows,
+            val_labels=val_labels
         )
         print(f"Training complete for {args.dataset}.")
     else:
