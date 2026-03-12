@@ -16,6 +16,7 @@ from ProgressBar import ProgressBar
 
 # W&B Integration
 import wandb
+from sklearn.metrics import roc_auc_score
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
@@ -282,6 +283,15 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
     # optical loss
     loss_opt = tf.reduce_mean(tf.abs(output_opt - plh_flow_true))
 
+    # ── Per-sample losses (for AUC computation during validation) ─────
+    # Reduce over spatial dims (H, W, C) only, keep batch dim
+    ps_loss_inten = tf.reduce_mean((output_appe - scaled_frame_true)**2, axis=[1, 2, 3])
+    ps_loss_gradi = tf.reduce_mean(
+        tf.abs(tf.abs(dy1) - tf.abs(dy0)) + tf.abs(tf.abs(dx1) - tf.abs(dx0)),
+        axis=[1, 2, 3])
+    ps_loss_appe = ps_loss_inten + ps_loss_gradi
+    ps_loss_opt  = tf.reduce_mean(tf.abs(output_opt - plh_flow_true), axis=[1, 2, 3])
+
     # GAN loss
     D_loss = 0.5*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_real_logits, labels=tf.ones_like(D_real))) + \
              0.5*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_fake_logits, labels=tf.zeros_like(D_fake)))
@@ -401,13 +411,13 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                     np.arange(len(val_images)),
                     max(1, int(np.ceil(len(val_images) / batch_size)))
                 )
-                # Collect per-sample losses for healthy/unhealthy split
+                # Collect TRUE per-sample losses (not batch-means)
                 per_sample_appe = np.zeros(len(val_images))
                 per_sample_opt  = np.zeros(len(val_images))
 
                 for vb in val_batch_idx:
-                    vb_loss_appe, vb_loss_opt = sess.run(
-                        [loss_appe, loss_opt],
+                    ps_appe_vals, ps_opt_vals = sess.run(
+                        [ps_loss_appe, ps_loss_opt],
                         feed_dict={
                             plh_frame_true: val_images[vb],
                             plh_flow_true:  val_flows[vb],
@@ -415,9 +425,8 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                             plh_dropout_prob: 1.0
                         }
                     )
-                    # Store batch-mean loss for each sample in batch
-                    per_sample_appe[vb] = vb_loss_appe
-                    per_sample_opt[vb]  = vb_loss_opt
+                    per_sample_appe[vb] = ps_appe_vals
+                    per_sample_opt[vb]  = ps_opt_vals
 
                 # ── Combined loss ────────────────────────────────────────
                 epoch_val_appe = np.mean(per_sample_appe)
@@ -426,9 +435,10 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 print('  [VAL] epoch %d/%d: val_loss_appe = %.4f, val_loss_flow = %.4f'
                       % (i+1, max_epoch, epoch_val_appe, epoch_val_opt))
 
-                # ── Healthy / Unhealthy split ────────────────────────────
+                # ── Healthy / Unhealthy split + AUC ──────────────────────
                 val_healthy_appe = val_healthy_opt = np.nan
                 val_unhealthy_appe = val_unhealthy_opt = np.nan
+                auc_appe = auc_opt = auc_combined = np.nan
 
                 if val_labels is not None and len(val_labels) == len(val_images):
                     labels_arr = np.array(val_labels)
@@ -447,6 +457,19 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                         print('  [VAL-Unhealthy] appe = %.4f, flow = %.4f  (%d samples)'
                               % (val_unhealthy_appe, val_unhealthy_opt, np.sum(unhealthy_mask)))
 
+                    # ── AUC: higher recon error → unhealthy (label=1) ────
+                    if np.any(healthy_mask) and np.any(unhealthy_mask):
+                        binary_labels = unhealthy_mask.astype(int)  # NOR=0, disease=1
+                        try:
+                            auc_appe = roc_auc_score(binary_labels, per_sample_appe)
+                            auc_opt  = roc_auc_score(binary_labels, per_sample_opt)
+                            combined_score = per_sample_appe + 2.0 * per_sample_opt
+                            auc_combined = roc_auc_score(binary_labels, combined_score)
+                            print('  [VAL-AUC]  appe = %.4f, flow = %.4f, combined = %.4f'
+                                  % (auc_appe, auc_opt, auc_combined))
+                        except ValueError as e:
+                            print(f'  [VAL-AUC] could not compute: {e}')
+
                 global_step = (i + 1) * len(batch_idx)
 
                 log_dict = {
@@ -460,6 +483,10 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 if not np.isnan(val_unhealthy_appe):
                     log_dict["Val_Unhealthy_Appearance_Loss"] = val_unhealthy_appe
                     log_dict["Val_Unhealthy_Flow_Loss"]       = val_unhealthy_opt
+                if not np.isnan(auc_appe):
+                    log_dict["Val_AUC_Appearance"] = auc_appe
+                    log_dict["Val_AUC_Flow"]       = auc_opt
+                    log_dict["Val_AUC_Combined"]   = auc_combined
                 wandb.log(log_dict, step=global_step)
 
                 val_losses = np.concatenate(
