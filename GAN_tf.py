@@ -249,7 +249,7 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
     print('no. of images = %s' % len(training_images))
     assert len(training_images) == len(training_flows)
     h, w = training_images.shape[1:3]
-    assert h < w
+    assert h <= w
     # removed from original code so we dont change the input data
     # training_images /= 0.5
     # training_images -= 1.
