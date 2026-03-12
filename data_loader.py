@@ -4,7 +4,33 @@ import numpy as np
 import pandas as pd
 import SimpleITK as sitk
 
-def load_acdc_data(base_dir, target_size=(128, 192)):
+def center_crop_or_pad(image, target_h=128, target_w=128):
+    """Center crops an image, padding with zeros if it's smaller than the target size."""
+    h, w = image.shape
+    
+    # 1. Pad if the image is smaller than the target size
+    pad_h = max(0, target_h - h)
+    pad_w = max(0, target_w - w)
+    
+    if pad_h > 0 or pad_w > 0:
+        # Pad evenly on both sides
+        image = np.pad(
+            image, 
+            ((pad_h // 2, pad_h - pad_h // 2), (pad_w // 2, pad_w - pad_w // 2)), 
+            mode='constant', 
+            constant_values=0
+        )
+        h, w = image.shape # Update dimensions after padding
+
+    # 2. Calculate the center crop coordinates
+    center_y, center_x = h // 2, w // 2
+    start_y = center_y - target_h // 2
+    start_x = center_x - target_w // 2
+    
+    # 3. Crop and return
+    return image[start_y:start_y + target_h, start_x:start_x + target_w]
+
+def load_acdc_data(base_dir, target_size=(128, 128)):
     training_dir = os.path.join(base_dir, 'database', 'training')
     patients = sorted([d for d in os.listdir(training_dir) if os.path.isdir(os.path.join(training_dir, d))])
 
@@ -73,9 +99,10 @@ def load_acdc_data(base_dir, target_size=(128, 192)):
                 frame = slice_seq[t]
             
                 # 3. Resize the frame
-                frame_resized = cv2.resize(
-                    frame.astype(np.float32),
-                    (target_size[1], target_size[0])
+                frame_cropped = center_crop_or_pad(
+                    frame.astype(np.float32), 
+                    target_size[0], 
+                    target_size[1]
                 )
                     
                 # 4. Normalize using the percentiles (NOT the absolute min/max)
@@ -83,7 +110,7 @@ def load_acdc_data(base_dir, target_size=(128, 192)):
                 if (p99 - p1) < 1e-7:
                     frame_norm = np.zeros(target_size, dtype=np.float32)
                 else:
-                    frame_norm = (frame_resized - p1) / slice_range
+                    frame_norm = (frame_cropped - p1) / slice_range
                     
                     # 5. Clip values strictly to [0.0, 1.0] 
                     # ANY outlier pixel brighter than p99 is now forced to exactly 1.0
@@ -95,7 +122,7 @@ def load_acdc_data(base_dir, target_size=(128, 192)):
 
             # ------------------------------
                     
-            processed_frames_arr = np.array(processed_frames) # (T, 128, 192, 3)
+            processed_frames_arr = np.array(processed_frames) # (T, 128, 128, 3)
              
             # Compute flows and pairs
             for t in range(T-1):
@@ -120,7 +147,7 @@ def load_acdc_data(base_dir, target_size=(128, 192)):
 
 
 
-def load_mm_data(mm_training_dir, csv_path, target_size=(128, 192)):
+def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
     """
     Load M&M (Multi-centre, Multi-vendor, Multi-disease) cardiac MRI data.
     Only subjects with Pathology == 'NOR' (normal) are loaded.
@@ -189,16 +216,17 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 192)):
                 frame = slice_seq[t]
                 
                 # Resize the frame first
-                frame_resized = cv2.resize(
-                    frame.astype(np.float32),
-                    (target_size[1], target_size[0])
+                frame_cropped = center_crop_or_pad(
+                    frame.astype(np.float32), 
+                    target_size[0], 
+                    target_size[1]
                 )
                 
                 # Normalize using the percentiles
                 if (p99 - p1) < 1e-7:
                     frame_norm = np.zeros(target_size, dtype=np.float32)
                 else:
-                    frame_norm = (frame_resized - p1) / slice_range
+                    frame_norm = (frame_cropped - p1) / slice_range
                     # Clip values strictly to [0.0, 1.0] to crush extreme outliers
                     frame_norm = np.clip(frame_norm, 0.0, 1.0) 
 
@@ -228,7 +256,7 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 192)):
     return np.array(all_images), np.array(all_flows)
 
 
-def load_combined_data(acdc_dir, mm_training_dir, csv_path, target_size=(128, 192)):
+def load_combined_data(acdc_dir, mm_training_dir, csv_path, target_size=(128, 128)):
     """
     Load and concatenate NOR patients from both ACDC (Dataset_2) and
     M&M (Dataset_1) datasets.
@@ -238,7 +266,7 @@ def load_combined_data(acdc_dir, mm_training_dir, csv_path, target_size=(128, 19
     acdc_dir       : str    root of Dataset_2 (contains 'database/training')
     mm_training_dir: str    Dataset_1/Training folder
     csv_path       : str    M&M CSV metadata file path
-    target_size    : tuple  (H, W) resize target, default (128, 192)
+    target_size    : tuple  (H, W) resize target, default (128, 128)
 
     Returns
     -------
@@ -273,7 +301,7 @@ def load_combined_data(acdc_dir, mm_training_dir, csv_path, target_size=(128, 19
 # Optical flow is computed from ES → ED.
 
 def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
-                              target_size=(128, 192)):
+                              target_size=(128, 128)):
     """
     Load only End-Diastole (ED) and End-Systole (ES) frame pairs
     from both ACDC (Dataset_2) and M&M (Dataset_1) NOR subjects.
@@ -283,7 +311,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
     acdc_dir        : str   Root of Dataset_2 (contains 'database/training').
     mm_training_dir : str   Dataset_1/Training folder.
     csv_path        : str   M&M CSV metadata file path.
-    target_size     : tuple (H, W) resize target, default (128, 192).
+    target_size     : tuple (H, W) resize target, default (128, 128).
 
     Returns
     -------
@@ -293,14 +321,15 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
 
     def _preprocess_frame(frame, p1, p99, target_size):
         """Resize + percentile-normalise a single 2-D frame to RGB."""
-        frame_resized = cv2.resize(
-            frame.astype(np.float32),
-            (target_size[1], target_size[0])
-        )
+        frame_cropped = center_crop_or_pad(
+                    frame.astype(np.float32), 
+                    target_size[0], 
+                    target_size[1]
+                )
         if (p99 - p1) < 1e-7:
             frame_norm = np.zeros(target_size, dtype=np.float32)
         else:
-            frame_norm = np.clip((frame_resized - p1) / (p99 - p1 + 1e-8),
+            frame_norm = np.clip((frame_cropped - p1) / (p99 - p1 + 1e-8),
                                  0.0, 1.0)
         return np.stack([frame_norm] * 3, axis=-1)  # (H, W, 3)
 
@@ -474,7 +503,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
 # pairs with optical flow).
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_acdc_test_val_data(base_dir, target_size=(128, 192), seed=42):
+def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
     """
     Load the ACDC *testing* set and split it into validation and test subsets.
 
@@ -485,7 +514,7 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 192), seed=42):
     Parameters
     ----------
     base_dir    : str    Root of Dataset_2 (contains 'database/testing').
-    target_size : tuple  (H, W) resize target, default (128, 192).
+    target_size : tuple  (H, W) resize target, default (128, 128).
     seed        : int    Random seed for reproducible patient selection.
 
     Returns
@@ -596,15 +625,16 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 192), seed=42):
             processed_frames = []
             for t in range(T):
                 frame = slice_seq[t]
-                frame_resized = cv2.resize(
-                    frame.astype(np.float32),
-                    (target_size[1], target_size[0])
+                frame_cropped = center_crop_or_pad(
+                    frame.astype(np.float32), 
+                    target_size[0], 
+                    target_size[1]
                 )
                 if (p99 - p1) < 1e-7:
                     frame_norm = np.zeros(target_size, dtype=np.float32)
                 else:
                     frame_norm = np.clip(
-                        (frame_resized - p1) / slice_range, 0.0, 1.0
+                        (frame_cropped - p1) / slice_range, 0.0, 1.0
                     )
                 frame_rgb = np.stack([frame_norm] * 3, axis=-1)
                 processed_frames.append(frame_rgb)
@@ -673,7 +703,7 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 192), seed=42):
 # so downstream code can analyse each group separately.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 192)):
+def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
     """
     Load ALL subjects from the M&M Validation folder (every pathology).
 
@@ -681,7 +711,7 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 192)):
     ----------
     mm_val_dir  : str    Path to Dataset_1/Validation.
     csv_path    : str    Path to the M&M CSV metadata file.
-    target_size : tuple  (H, W) resize target, default (128, 192).
+    target_size : tuple  (H, W) resize target, default (128, 128).
 
     Returns
     -------
@@ -732,15 +762,16 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 192)):
             processed_frames = []
             for t in range(T):
                 frame = slice_seq[t]
-                frame_resized = cv2.resize(
-                    frame.astype(np.float32),
-                    (target_size[1], target_size[0])
+                frame_cropped = center_crop_or_pad(
+                    frame.astype(np.float32), 
+                    target_size[0], 
+                    target_size[1]
                 )
                 if (p99 - p1) < 1e-7:
                     frame_norm = np.zeros(target_size, dtype=np.float32)
                 else:
                     frame_norm = np.clip(
-                        (frame_resized - p1) / slice_range, 0.0, 1.0
+                        (frame_cropped - p1) / slice_range, 0.0, 1.0
                     )
                 frame_rgb = np.stack([frame_norm] * 3, axis=-1)
                 processed_frames.append(frame_rgb)
@@ -782,7 +813,7 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 192)):
 # Flow is computed ES → ED (matching load_combined_ed_es_data).
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 192), seed=42):
+def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
     """
     Load the ACDC *testing* set using only ED/ES frames and split into
     validation and test subsets.
@@ -799,11 +830,14 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 192), seed=42):
     import random
 
     def _preprocess_frame(frame, p1, p99, target_size):
-        frame_resized = cv2.resize(
-            frame.astype(np.float32), (target_size[1], target_size[0]))
+        frame_cropped = center_crop_or_pad(
+                    frame.astype(np.float32), 
+                    target_size[0], 
+                    target_size[1]
+                )
         if (p99 - p1) < 1e-7:
             return np.stack([np.zeros(target_size, dtype=np.float32)] * 3, axis=-1)
-        frame_norm = np.clip((frame_resized - p1) / (p99 - p1 + 1e-8), 0.0, 1.0)
+        frame_norm = np.clip((frame_cropped - p1) / (p99 - p1 + 1e-8), 0.0, 1.0)
         return np.stack([frame_norm] * 3, axis=-1)
 
     testing_dir = os.path.join(base_dir, 'database', 'testing')
@@ -949,7 +983,7 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 192), seed=42):
 # Flow is computed ES → ED.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 192)):
+def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
     """
     Load ALL subjects from M&M Validation folder using only ED/ES frames.
 
@@ -957,7 +991,7 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 192)):
     ----------
     mm_val_dir  : str    Path to Dataset_1/Validation.
     csv_path    : str    Path to M&M CSV metadata file.
-    target_size : tuple  (H, W) resize target, default (128, 192).
+    target_size : tuple  (H, W) resize target, default (128, 128).
 
     Returns
     -------
@@ -967,11 +1001,14 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 192)):
     all_pids   : list[str]    per-sample subject ID
     """
     def _preprocess_frame(frame, p1, p99, target_size):
-        frame_resized = cv2.resize(
-            frame.astype(np.float32), (target_size[1], target_size[0]))
+        frame_cropped = center_crop_or_pad(
+                    frame.astype(np.float32), 
+                    target_size[0], 
+                    target_size[1]
+                )
         if (p99 - p1) < 1e-7:
             return np.stack([np.zeros(target_size, dtype=np.float32)] * 3, axis=-1)
-        frame_norm = np.clip((frame_resized - p1) / (p99 - p1 + 1e-8), 0.0, 1.0)
+        frame_norm = np.clip((frame_cropped - p1) / (p99 - p1 + 1e-8), 0.0, 1.0)
         return np.stack([frame_norm] * 3, axis=-1)
 
     df = pd.read_csv(csv_path)
