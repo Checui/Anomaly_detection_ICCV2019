@@ -144,7 +144,7 @@ def conv2d_Inception(x, out_channel, max_filter_size=7, scope=None):
         return tf.concat([s1_11, s3_n1, s5_n1, s7_n1], -1)
 
 
-# 128 * 192
+# 128 * 128
 def Generator(input_data, is_training, keep_prob, return_layers=False):
 
     def G_conv_bn_relu(x, out_channel, filter_size, stride=2, training=False, bn=True, scope=None):
@@ -201,7 +201,7 @@ def Generator(input_data, is_training, keep_prob, return_layers=False):
         return out_flow, out_frame
 
 
-# 128*192
+# 128*128
 def Discriminator(frame_true, flow_hat, is_training, reuse=False, return_middle_layers=False):
 
     def D_conv_bn_active(x, out_channel, filter_size, stride=2, training=False, bn=True, active=tf.nn.leaky_relu, scope=None):

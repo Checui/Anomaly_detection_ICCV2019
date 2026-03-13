@@ -29,7 +29,26 @@ def center_crop_or_pad(image, target_h=128, target_w=128):
     
     # 3. Crop and return
     return image[start_y:start_y + target_h, start_x:start_x + target_w]
-
+def aspect_preserve_resize(image, target_h=128, target_w=128):
+    """Resizes image to fit within target dimensions while preserving aspect ratio, then pads."""
+    h, w = image.shape
+    
+    # 1. Calculate the scale factor to fit the image inside the target box
+    scale = min(target_h / h, target_w / w)
+    new_h, new_w = int(h * scale), int(w * scale)
+    
+    # 2. Resize keeping the aspect ratio (no squashing)
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    
+    # 3. Calculate padding needed to reach 128x128
+    pad_h = target_h - new_h
+    pad_w = target_w - new_w
+    
+    top, bottom = pad_h // 2, pad_h - (pad_h // 2)
+    left, right = pad_w // 2, pad_w - (pad_w // 2)
+    
+    # 4. Pad with black pixels
+    return cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
 def load_acdc_data(base_dir, target_size=(128, 128)):
     training_dir = os.path.join(base_dir, 'database', 'training')
     patients = sorted([d for d in os.listdir(training_dir) if os.path.isdir(os.path.join(training_dir, d))])
@@ -99,7 +118,7 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
                 frame = slice_seq[t]
             
                 # 3. Resize the frame
-                frame_cropped = center_crop_or_pad(
+                frame_cropped = aspect_preserve_resize(
                     frame.astype(np.float32), 
                     target_size[0], 
                     target_size[1]
@@ -216,7 +235,7 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
                 frame = slice_seq[t]
                 
                 # Resize the frame first
-                frame_cropped = center_crop_or_pad(
+                frame_cropped = aspect_preserve_resize(
                     frame.astype(np.float32), 
                     target_size[0], 
                     target_size[1]
@@ -321,7 +340,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
 
     def _preprocess_frame(frame, p1, p99, target_size):
         """Resize + percentile-normalise a single 2-D frame to RGB."""
-        frame_cropped = center_crop_or_pad(
+        frame_cropped = aspect_preserve_resize(
                     frame.astype(np.float32), 
                     target_size[0], 
                     target_size[1]
@@ -625,7 +644,7 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
             processed_frames = []
             for t in range(T):
                 frame = slice_seq[t]
-                frame_cropped = center_crop_or_pad(
+                frame_cropped = aspect_preserve_resize(
                     frame.astype(np.float32), 
                     target_size[0], 
                     target_size[1]
@@ -762,7 +781,7 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
             processed_frames = []
             for t in range(T):
                 frame = slice_seq[t]
-                frame_cropped = center_crop_or_pad(
+                frame_cropped = aspect_preserve_resize(
                     frame.astype(np.float32), 
                     target_size[0], 
                     target_size[1]
@@ -830,7 +849,7 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
     import random
 
     def _preprocess_frame(frame, p1, p99, target_size):
-        frame_cropped = center_crop_or_pad(
+        frame_cropped = aspect_preserve_resize(
                     frame.astype(np.float32), 
                     target_size[0], 
                     target_size[1]
@@ -1001,7 +1020,7 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
     all_pids   : list[str]    per-sample subject ID
     """
     def _preprocess_frame(frame, p1, p99, target_size):
-        frame_cropped = center_crop_or_pad(
+        frame_cropped = aspect_preserve_resize(
                     frame.astype(np.float32), 
                     target_size[0], 
                     target_size[1]
