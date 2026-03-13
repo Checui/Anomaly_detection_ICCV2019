@@ -157,6 +157,15 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
 
                 # Add Magnitude channel
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+
+                # --- NEW: Check for dead/static slices ---
+                # If the maximum pixel displacement is tiny, or the average displacement 
+                # is virtually zero, skip this slice because the heart isn't beating here.
+                if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
+                    # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+                    continue
+                # -----------------------------------------
+
                 flow_3ch = np.dstack((flow, mag)) # (H, W, 3)
                 
                 all_images.append(processed_frames_arr[t]) 
@@ -267,6 +276,15 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
                     continue
 
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+
+                # --- NEW: Check for dead/static slices ---
+                # If the maximum pixel displacement is tiny, or the average displacement 
+                # is virtually zero, skip this slice because the heart isn't beating here.
+                if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
+                    # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+                    continue
+                # -----------------------------------------
+
                 flow_3ch = np.dstack((flow, mag))  # (H, W, 3)
 
                 all_images.append(processed_frames_arr[t])
@@ -434,6 +452,15 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
                 continue
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+            
+            # --- NEW: Check for dead/static slices ---
+            # If the maximum pixel displacement is tiny, or the average displacement 
+            # is virtually zero, skip this slice because the heart isn't beating here.
+            if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
+                # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+                continue
+            # -----------------------------------------
+
             flow_3ch = np.dstack((flow, mag))  # (H, W, 3)
 
             all_images.append(es_frame_rgb)
@@ -495,6 +522,15 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
                 continue
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+            
+            # --- NEW: Check for dead/static slices ---
+            # If the maximum pixel displacement is tiny, or the average displacement 
+            # is virtually zero, skip this slice because the heart isn't beating here.
+            if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
+                # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+                continue
+            # -----------------------------------------
+
             flow_3ch = np.dstack((flow, mag))
 
             all_images.append(es_frame_rgb)
@@ -673,6 +709,15 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
                     continue
 
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+                
+                # --- NEW: Check for dead/static slices ---
+                # If the maximum pixel displacement is tiny, or the average displacement 
+                # is virtually zero, skip this slice because the heart isn't beating here.
+                if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
+                    # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+                    continue
+                # -----------------------------------------
+
                 flow_3ch = np.dstack((flow, mag))
 
                 images.append(processed_frames_arr[t])
@@ -810,6 +855,15 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
                     continue
 
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+                
+                # --- NEW: Check for dead/static slices ---
+                # If the maximum pixel displacement is tiny, or the average displacement 
+                # is virtually zero, skip this slice because the heart isn't beating here.
+                if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
+                    # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+                    continue
+                # -----------------------------------------
+
                 flow_3ch = np.dstack((flow, mag))
 
                 all_images.append(processed_frames_arr[t])
@@ -961,6 +1015,15 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
                 continue
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+            
+            # --- NEW: Check for dead/static slices ---
+            # If the maximum pixel displacement is tiny, or the average displacement 
+            # is virtually zero, skip this slice because the heart isn't beating here.
+            if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
+                # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+                continue
+            # -----------------------------------------
+
             flow_3ch = np.dstack((flow, mag))
 
             images.append(es_rgb)
@@ -1093,6 +1156,15 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
                 continue
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+            
+            # --- NEW: Check for dead/static slices ---
+            # If the maximum pixel displacement is tiny, or the average displacement 
+            # is virtually zero, skip this slice because the heart isn't beating here.
+            if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
+                # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+                continue
+            # -----------------------------------------
+
             flow_3ch = np.dstack((flow, mag))
 
             all_images.append(es_rgb)
