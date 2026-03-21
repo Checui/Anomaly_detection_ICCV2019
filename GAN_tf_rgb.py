@@ -154,14 +154,16 @@ def Generator(input_data, is_training, keep_prob, return_layers=False):
         h3fl = G_deconv_bn_dr_relu_concat(h4fl, h3, [b_size, h//4, w//4, filters*4], filter_size, keep_prob, training=is_training, scope='gen_h3fl')
         h2fl = G_deconv_bn_dr_relu_concat(h3fl, h2, [b_size, h//2, w//2, filters*2], filter_size, keep_prob, training=is_training, scope='gen_h2fl')
         h1fl = G_deconv_bn_dr_relu_concat(h2fl, h1, [b_size, h, w, filters], filter_size, keep_prob, training=is_training, scope='gen_h1fl')
-        out_flow = conv2d(h1fl, 3, filter_size=3, stride=1, scope='gen_flow')
+        out_ed_raw = conv2d(h1fl, 3, filter_size=3, stride=1, scope='gen_flow')
+        out_flow = tf.nn.tanh(out_ed_raw) # Bounds prediction to [-1, 1]
 
         '''Unet DECODER for FRAME'''
         h4fr = G_deconv_bn_dr_relu_concat(h5, None, [b_size, h//8, w//8, filters*4], filter_size, keep_prob, training=is_training, scope='gen_h4fr')
         h3fr = G_deconv_bn_dr_relu_concat(h4fr, None, [b_size, h//4, w//4, filters*4], filter_size, keep_prob, training=is_training, scope='gen_h3fr')
         h2fr = G_deconv_bn_dr_relu_concat(h3fr, None, [b_size, h//2, w//2, filters*2], filter_size, keep_prob, training=is_training, scope='gen_h2fr')
         h1fr = G_deconv_bn_dr_relu_concat(h2fr, None, [b_size, h, w, filters], filter_size, keep_prob, training=is_training, scope='gen_h1fr')
-        out_frame = conv2d(h1fr, input_data.get_shape()[-1], filter_size=3, stride=1, scope='gen_frame')
+        out_frame_raw = conv2d(h1fr, input_data.get_shape()[-1], filter_size=3, stride=1, scope='gen_frame')
+        out_frame = tf.nn.tanh(out_frame_raw) # Bounds reconstruction to [-1, 1]
         #
         if return_layers:
             return out_flow, out_frame, [h0, h1, h2, h3, h4, h5, h4fl, h3fl, h2fl, h1fl, h4fr, h3fr, h2fr, h1fr]
@@ -515,8 +517,8 @@ def test_Unet_naive_with_batch_norm(test_es_images, test_ed_images, h, w, datase
                                     plh_is_training: False,
                                     plh_dropout_prob: 1.0})
             
-            saved_out_appes[batch_idx[j]] = 0.5*(saved_out_appes[batch_idx[j]] + 1)
-            saved_out_eds[batch_idx[j]]   = 0.5*(saved_out_eds[batch_idx[j]] + 1)
+            saved_out_appes[batch_idx[j]] = np.clip(0.5 * (saved_out_appes[batch_idx[j]] + 1), 0.0, 1.0)
+            saved_out_eds[batch_idx[j]]   = np.clip(0.5 * (saved_out_eds[batch_idx[j]] + 1), 0.0, 1.0)
         progress.done()
 
     np.savez_compressed(saved_data_file, image=saved_out_appes, ed_pred=saved_out_eds)
