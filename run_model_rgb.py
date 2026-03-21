@@ -23,7 +23,7 @@ sys.modules['tensorflow'] = tf
 # Import your local modules
 import GAN_tf_rgb
 import numpy as np
-from data_loader import (
+from data_loader_rgb import (
     load_acdc_data,
     load_mm_data,
     load_combined_data,

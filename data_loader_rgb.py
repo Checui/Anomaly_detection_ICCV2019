@@ -145,10 +145,19 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
              
             # Compute flows and pairs
             # Create pairs of consecutive frames
-            for t in range(T-1):
-                # We append the current frame as the input, and the next frame as the target
-                all_images.append(processed_frames_arr[t]) 
-                all_flows.append(processed_frames_arr[t+1]) # We keep the variable name 'all_flows' to avoid breaking the return signature
+            # Create pairs of consecutive frames
+            for t in range(T - 1):
+                
+                # 1. Calculate simple pixel difference between the target and input frame
+                pixel_diff = np.abs(processed_frames_arr[t+1] - processed_frames_arr[t])
+
+                # 2. If the average pixel change is tiny, the heart isn't beating here. Skip it.
+                if np.mean(pixel_diff) < 0.01:  # Tune this threshold if needed
+                    continue
+
+                # 3. If it passes, append as normal
+                all_images.append(processed_frames_arr[t])
+                all_flows.append(processed_frames_arr[t+1]) # Appending the target RGB frame
     return np.array(all_images), np.array(all_flows)
 
 
@@ -243,6 +252,15 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
 
             # Create pairs of consecutive frames
             for t in range(T - 1):
+                
+                # 1. Calculate simple pixel difference between the target and input frame
+                pixel_diff = np.abs(processed_frames_arr[t+1] - processed_frames_arr[t])
+
+                # 2. If the average pixel change is tiny, the heart isn't beating here. Skip it.
+                if np.mean(pixel_diff) < 0.01:  # Tune this threshold if needed
+                    continue
+
+                # 3. If it passes, append as normal
                 all_images.append(processed_frames_arr[t])
                 all_flows.append(processed_frames_arr[t+1]) # Appending the target RGB frame
 
@@ -611,6 +629,15 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
 
             # Create pairs of consecutive frames
             for t in range(T - 1):
+                
+                # 1. Calculate simple pixel difference between the target and input frame
+                pixel_diff = np.abs(processed_frames_arr[t+1] - processed_frames_arr[t])
+
+                # 2. If the average pixel change is tiny, the heart isn't beating here. Skip it.
+                if np.mean(pixel_diff) < 0.01:  # Tune this threshold if needed
+                    continue
+
+                # 3. If it passes, append as normal
                 images.append(processed_frames_arr[t])
                 flows.append(processed_frames_arr[t+1]) # Appending the target RGB frame
                 labels.append(group)
@@ -735,6 +762,15 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
             # Create pairs of consecutive frames
             for t in range(T - 1):
+                
+                # 1. Calculate simple pixel difference between the target and input frame
+                pixel_diff = np.abs(processed_frames_arr[t+1] - processed_frames_arr[t])
+
+                # 2. If the average pixel change is tiny, the heart isn't beating here. Skip it.
+                if np.mean(pixel_diff) < 0.01:  # Tune this threshold if needed
+                    continue
+
+                # 3. If it passes, append as normal
                 all_images.append(processed_frames_arr[t])
                 all_flows.append(processed_frames_arr[t+1]) # Appending the target RGB frame
                 all_labels.append(pathology)

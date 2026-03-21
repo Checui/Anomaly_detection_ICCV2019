@@ -58,7 +58,7 @@ python run_model.py \
     --mm_val_dir ../Dataset_1/Validation \
     --mm_csv ../Dataset_1/211230_M\&Ms_Dataset_information_diagnosis_opendataset.csv \
     --epochs 100 \
-    --start_epoch 50
+    --start_epoch 0
 
 echo "--- Training finished ---"
 echo "Job finished on $(date)"
