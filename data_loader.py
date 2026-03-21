@@ -150,7 +150,7 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
                 
                 # Calc Dense Optical Flow
                 try:
-                    flow = cv2.calcOpticalFlowFarneback(prev_gray, next_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+                    flow = cv2.calcOpticalFlowFarneback(prev_gray, next_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
                 except Exception as e:
                     print(f"Flow failed: {e}")
                     continue
@@ -269,7 +269,7 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
 
                 try:
                     flow = cv2.calcOpticalFlowFarneback(
-                        prev_gray, next_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
+                        prev_gray, next_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0
                     )
                 except Exception as e:
                     print(f"Flow failed for {subject_id} z={z} t={t}: {e}")
@@ -446,7 +446,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
 
             try:
                 flow = cv2.calcOpticalFlowFarneback(
-                    es_gray, ed_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+                    es_gray, ed_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {p} z={z}: {e}")
                 continue
@@ -516,7 +516,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
 
             try:
                 flow = cv2.calcOpticalFlowFarneback(
-                    es_gray, ed_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+                    es_gray, ed_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {subject_id} z={z}: {e}")
                 continue
@@ -702,7 +702,7 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
 
                 try:
                     flow = cv2.calcOpticalFlowFarneback(
-                        prev_gray, next_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
+                        prev_gray, next_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0
                     )
                 except Exception as e:
                     print(f"Flow failed {p} z={z} t={t}: {e}")
@@ -848,7 +848,7 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
                 try:
                     flow = cv2.calcOpticalFlowFarneback(
-                        prev_gray, next_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
+                        prev_gray, next_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0
                     )
                 except Exception as e:
                     print(f"Flow failed {subject_id} z={z} t={t}: {e}")
@@ -1009,7 +1009,7 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
 
             try:
                 flow = cv2.calcOpticalFlowFarneback(
-                    es_gray, ed_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+                    es_gray, ed_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {p} z={z}: {e}")
                 continue
@@ -1150,7 +1150,7 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
             try:
                 flow = cv2.calcOpticalFlowFarneback(
-                    es_gray, ed_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+                    es_gray, ed_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {subject_id} z={z}: {e}")
                 continue
