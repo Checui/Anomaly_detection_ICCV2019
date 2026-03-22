@@ -100,7 +100,7 @@ if __name__ == "__main__":
         print(f"\nStarting Training for {args.dataset}...")
         
         # KEY FIX: Match the keyword arguments to the new GAN_tf.py signature
-        GAN_tf.train_Unet_naive_with_batch_norm(
+        GAN_tf_rgb.train_Unet_naive_with_batch_norm(
             training_es_images=es_images,
             training_ed_images=ed_images,
             max_epoch=args.epochs,
