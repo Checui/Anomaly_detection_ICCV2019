@@ -415,9 +415,16 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             es_frame_rgb = _preprocess_frame(slice_seq[es_idx], p1, p99, target_size)
             ed_frame_rgb = _preprocess_frame(slice_seq[ed_idx], p1, p99, target_size)
 
-            # For ED/ES loaders, the input is ES and the target is ED
+            # 1. Calculate pixel difference
+            pixel_diff = np.abs(ed_frame_rgb - es_frame_rgb)
+            
+            # 2. Skip static slices
+            if np.mean(pixel_diff) < 0.01:
+                continue
+
+            # 3. Append if there is motion
             all_images.append(es_frame_rgb)
-            all_flows.append(ed_frame_rgb) # Appending the target ED RGB frame
+            all_flows.append(ed_frame_rgb)
 
     print(f"ACDC NOR ED/ES samples: {len(all_images)}")
     acdc_count = len(all_images)
@@ -909,11 +916,14 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
             es_rgb = _preprocess_frame(slice_seq[es_idx], p1, p99, target_size)
             ed_rgb = _preprocess_frame(slice_seq[ed_idx], p1, p99, target_size)
 
+            pixel_diff = np.abs(ed_rgb - es_rgb)
+            if np.mean(pixel_diff) < 0.01:
+                continue
+
             images.append(es_rgb)
-            flows.append(ed_rgb) # Appending the target ED RGB frame
+            flows.append(ed_rgb) 
             labels.append(group)
             pids.append(p)
-
         return images, flows, labels, pids
 
     # ── 4. Load each split ─────────────────────────────────────────────────
@@ -1028,8 +1038,13 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
             es_rgb = _preprocess_frame(slice_seq[es_idx], p1, p99, target_size)
             ed_rgb = _preprocess_frame(slice_seq[ed_idx], p1, p99, target_size)
 
-            images.append(es_rgb)
-            flows.append(ed_rgb) # Appending the target ED RGB frame
+            pixel_diff = np.abs(ed_rgb - es_rgb)
+            if np.mean(pixel_diff) < 0.01:
+                continue
+            
+            # FIXED list names from 'images' to 'all_images'
+            all_images.append(es_rgb)
+            all_flows.append(ed_rgb) 
             all_labels.append(pathology)
             all_pids.append(subject_id)
 
