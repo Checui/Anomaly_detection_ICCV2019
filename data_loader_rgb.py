@@ -6,20 +6,14 @@ import SimpleITK as sitk
 
 
 def load_and_orient_sitk(nii_path):
-    """Safely loads and reorients 3D or 4D NIfTI images to RAS standard."""
+    """Safely loads 4D NIfTI images WITHOUT breaking the oblique SAX plane."""
     image = sitk.ReadImage(str(nii_path))
     
-    if image.GetDimension() == 4:
-        num_frames = image.GetSize()[3]
-        processed_frames = []
-        for t in range(num_frames):
-            vol_3d = image[:, :, :, t]
-            vol_3d_ras = sitk.DICOMOrient(vol_3d, 'RAS')
-            processed_frames.append(sitk.GetArrayFromImage(vol_3d_ras))
-        return np.stack(processed_frames, axis=0) # Returns (T, Z, Y, X)
-    else:
-        image = sitk.DICOMOrient(image, 'RAS')
-        return sitk.GetArrayFromImage(image)
+    # SimpleITK automatically handles the 4D shape mapping.
+    # A 4D (X, Y, Z, T) NIfTI will become a (T, Z, Y, X) numpy array.
+    img_arr = sitk.GetArrayFromImage(image)
+    
+    return img_arr
 
 def center_crop_or_pad(image, target_h=128, target_w=128):
     """Center crops an image, padding with zeros if it's smaller than the target size."""
