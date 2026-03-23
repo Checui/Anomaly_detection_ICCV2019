@@ -468,7 +468,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             # Replaced with our new 4D-safe orientation helper
             img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
         except Exception as e:
-            print(f"Load error {p}: {e}")
+            print(f"Load error {subject_id}: {e}")
             continue
 
         if img_arr.ndim != 4:
@@ -751,7 +751,7 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
             # Replaced with our new 4D-safe orientation helper
             img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
         except Exception as e:
-            print(f"Load error {p}: {e}")
+            print(f"Load error {subject_id}: {e}")
             continue
 
         if img_arr.ndim != 4:
@@ -1037,7 +1037,7 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
             # Replaced with our new 4D-safe orientation helper
             img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
         except Exception as e:
-            print(f"Load error {p}: {e}")
+            print(f"Load error {subject_id}: {e}")
             continue
 
         if img_arr.ndim != 4:
