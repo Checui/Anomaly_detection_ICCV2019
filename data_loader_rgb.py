@@ -4,6 +4,23 @@ import numpy as np
 import pandas as pd
 import SimpleITK as sitk
 
+
+def load_and_orient_sitk(nii_path):
+    """Safely loads and reorients 3D or 4D NIfTI images to RAS standard."""
+    image = sitk.ReadImage(str(nii_path))
+    
+    if image.GetDimension() == 4:
+        num_frames = image.GetSize()[3]
+        processed_frames = []
+        for t in range(num_frames):
+            vol_3d = image[:, :, :, t]
+            vol_3d_ras = sitk.DICOMOrient(vol_3d, 'RAS')
+            processed_frames.append(sitk.GetArrayFromImage(vol_3d_ras))
+        return np.stack(processed_frames, axis=0) # Returns (T, Z, Y, X)
+    else:
+        image = sitk.DICOMOrient(image, 'RAS')
+        return sitk.GetArrayFromImage(image)
+
 def center_crop_or_pad(image, target_h=128, target_w=128):
     """Center crops an image, padding with zeros if it's smaller than the target size."""
     h, w = image.shape
@@ -87,10 +104,9 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
              continue
              
         try:
-            img_obj = sitk.ReadImage(nii_path)
-            img_arr = sitk.GetArrayFromImage(img_obj) # (T, Z, Y, X) or similar. Normally ITK is (x,y,z,t) -> numpy (t,z,y,x)
+            img_arr = load_and_orient_sitk(nii_path)
         except Exception as e:
-            print(f"Error loading image for {p}: {e}")
+            print(f"Error loading ... : {e}")
             continue
 
         if len(img_arr.shape) == 4:
@@ -206,10 +222,9 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
         nii_path = os.path.join(mm_training_dir, fname)
 
         try:
-            img_obj = sitk.ReadImage(nii_path)
-            img_arr = sitk.GetArrayFromImage(img_obj)  # typically (T, Z, H, W)
+            img_arr = load_and_orient_sitk(nii_path)
         except Exception as e:
-            print(f"Error loading {fname}: {e}")
+            print(f"Error loading ... : {e}")
             continue
 
         if len(img_arr.shape) == 4:
@@ -393,7 +408,8 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             continue
 
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))  # (T,Z,H,W)
+            # Replaced with our new 4D-safe orientation helper
+            img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
         except Exception as e:
             print(f"Load error {p}: {e}")
             continue
@@ -449,9 +465,10 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
         nii_path = os.path.join(mm_training_dir, fname)
 
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))  # (T,Z,H,W)
+            # Replaced with our new 4D-safe orientation helper
+            img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
         except Exception as e:
-            print(f"Load error {subject_id}: {e}")
+            print(f"Load error {p}: {e}")
             continue
 
         if img_arr.ndim != 4:
@@ -596,9 +613,10 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
             return [], [], [], []
 
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
+            # Replaced with our new 4D-safe orientation helper
+            img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
         except Exception as e:
-            print(f"Error loading {p}: {e}")
+            print(f"Load error {p}: {e}")
             return [], [], [], []
 
         if img_arr.ndim != 4:
@@ -730,9 +748,10 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
         nii_path   = os.path.join(mm_val_dir, fname)
 
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
+            # Replaced with our new 4D-safe orientation helper
+            img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
         except Exception as e:
-            print(f"Error loading {subject_id}: {e}")
+            print(f"Load error {p}: {e}")
             continue
 
         if img_arr.ndim != 4:
@@ -894,9 +913,10 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
             return [], [], [], []
 
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
+            # Replaced with our new 4D-safe orientation helper
+            img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
         except Exception as e:
-            print(f"Error loading {p}: {e}")
+            print(f"Load error {p}: {e}")
             return [], [], [], []
         if img_arr.ndim != 4:
             return [], [], [], []
@@ -1014,9 +1034,10 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
         nii_path = os.path.join(mm_val_dir, fname)
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
+            # Replaced with our new 4D-safe orientation helper
+            img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
         except Exception as e:
-            print(f"Error loading {subject_id}: {e}")
+            print(f"Load error {p}: {e}")
             continue
 
         if img_arr.ndim != 4:
