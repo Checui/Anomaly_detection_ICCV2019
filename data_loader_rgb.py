@@ -48,12 +48,14 @@ def aspect_preserve_resize(image, target_h=128, target_w=128):
 def normalize_frame_to_rgb(frame, p1, p99, center_y, center_x, target_size):
     """Crops around the center of mass and normalizes a 2D frame."""
     # Use our new cropping logic
-    frame_cropped = crop_around_center(frame.astype(np.float32), center_y, center_x, *target_size)
+    # frame_cropped = crop_around_center(frame.astype(np.float32), center_y, center_x, *target_size)
+    # Use aspect preserve resize
+    frame_resized = aspect_preserve_resize(frame.astype(np.float32), *target_size)
     
     if (p99 - p1) < 1e-7:
         frame_norm = np.zeros(target_size, dtype=np.float32)
     else:
-        frame_norm = np.clip((frame_cropped - p1) / (p99 - p1 + 1e-8), 0.0, 1.0)
+        frame_norm = np.clip((frame_resized - p1) / (p99 - p1 + 1e-8), 0.0, 1.0)
         
     return np.stack([frame_norm] * 3, axis=-1)
 
@@ -116,16 +118,18 @@ def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128), motion_
     T, Z, _, _ = img_arr.shape
     
     # GET CENTERS FOR ALL Z-SLICES ONCE
-    centers = get_slice_centers_from_mask(mask_arr)
+    #centers = get_slice_centers_from_mask(mask_arr)
     images, target_frames = [], []
     
     for z in range(Z):
-        cy, cx = centers[z] # Unpack the center
+        #cy, cx = centers[z] # Unpack the center
         slice_seq = img_arr[:, z, :, :]
         p1, p99 = np.percentile(slice_seq, 1), np.percentile(slice_seq, 99)
         
         # Pass cy and cx into the normalizer
-        processed = [normalize_frame_to_rgb(slice_seq[t], p1, p99, cy, cx, target_size) for t in range(T)]
+        #processed = [normalize_frame_to_rgb(slice_seq[t], p1, p99, cy, cx, target_size) for t in range(T)]
+        # Use aspect preserve resize
+        processed = [normalize_frame_to_rgb(slice_seq[t], p1, p99, target_size) for t in range(T)]
         
         for t in range(T - 1):
             f1, f2 = processed[t], processed[t+1]
@@ -135,7 +139,7 @@ def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128), motion_
                 
     return images, target_frames
 
-def extract_edes_pairs(img_arr, mask_arr, ed_idx, es_idx, target_size=(128, 128), motion_threshold=0.01):
+def extract_edes_pairs(img_arr,mask_arr, ed_idx, es_idx, target_size=(128, 128), motion_threshold=0.01):
     if img_arr.ndim != 4:
         return [], []
         
@@ -144,18 +148,21 @@ def extract_edes_pairs(img_arr, mask_arr, ed_idx, es_idx, target_size=(128, 128)
         return [], []
         
     # GET CENTERS FOR ALL Z-SLICES ONCE
-    centers = get_slice_centers_from_mask(mask_arr)
+    # centers = get_slice_centers_from_mask(mask_arr)
     images, target_frames = [], []
     
     for z in range(Z):
-        cy, cx = centers[z] # Unpack the center for this specific slice
+        # cy, cx = centers[z] # Unpack the center for this specific slice
         
         slice_seq = img_arr[:, z, :, :]
         p1, p99 = np.percentile(slice_seq, 1), np.percentile(slice_seq, 99)
         
         # Pass cy and cx into the normalizer
-        es_rgb = normalize_frame_to_rgb(slice_seq[es_idx], p1, p99, cy, cx, target_size)
-        ed_rgb = normalize_frame_to_rgb(slice_seq[ed_idx], p1, p99, cy, cx, target_size)
+        # es_rgb = normalize_frame_to_rgb(slice_seq[es_idx], p1, p99, cy, cx, target_size)
+        # ed_rgb = normalize_frame_to_rgb(slice_seq[ed_idx], p1, p99, cy, cx, target_size)
+        # resize
+        es_rgb = normalize_frame_to_rgb(slice_seq[es_idx], p1, p99, target_size)
+        ed_rgb = normalize_frame_to_rgb(slice_seq[ed_idx], p1, p99, target_size)
         
         if np.mean(np.abs(ed_rgb - es_rgb)) >= motion_threshold:
             images.append(es_rgb)
@@ -208,10 +215,13 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
             
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            mask_arr = load_and_orient_sitk(mask_path) # Shape: (Z, H, W)
+            # mask_arr = load_and_orient_sitk(mask_path) # Shape: (Z, H, W)
             
             # FIXED: Call consecutive pairs extractor, not ED/ES!
-            imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
+            # imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
+            # resize
+            imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
+
             all_images.extend(imgs)
             all_targets.extend(targets)
         except Exception as e:
@@ -245,7 +255,9 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
             mask_arr = load_and_orient_sitk(mask_path) # Shape: (T, Z, H, W)
             
             # FIXED: Call consecutive pairs extractor!
-            imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
+            # imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
+            # resize
+            imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size) 
             all_images.extend(imgs)
             all_targets.extend(targets)
         except Exception as e:
@@ -295,7 +307,8 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path, target_size=(1
             img_arr = load_and_orient_sitk(nii_path)
             mask_arr = load_and_orient_sitk(mask_path)
             # FIXED: Pass mask_arr into the extractor!
-            imgs, targets = extract_edes_pairs(img_arr, mask_arr, int(info['ED']), int(info['ES']), target_size)
+            # imgs, targets = extract_edes_pairs(img_arr, mask_arr, int(info['ED']), int(info['ES']), target_size)
+            imgs, targets = extract_edes_pairs(img_arr, 0, int(info['ED']), int(info['ES']), target_size)
             all_images.extend(imgs)
             all_targets.extend(targets)
         except Exception as e:
@@ -323,9 +336,11 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path, target_size=(1
         try:
             ed_idx, es_idx = nor_info[subject_id]
             img_arr = load_and_orient_sitk(nii_path)
-            mask_arr = load_and_orient_sitk(mask_path)
+            # mask_arr = load_and_orient_sitk(mask_path)
             # FIXED: Pass mask_arr into the extractor!
-            imgs, targets = extract_edes_pairs(img_arr, mask_arr, ed_idx, es_idx, target_size)
+            # imgs, targets = extract_edes_pairs(img_arr, mask_arr, ed_idx, es_idx, target_size)
+            # resize
+            imgs, targets = extract_edes_pairs(img_arr, 0, ed_idx, es_idx, target_size)
             all_images.extend(imgs)
             all_targets.extend(targets)
         except Exception as e:
@@ -377,10 +392,12 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
             
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            mask_arr = load_and_orient_sitk(mask_path)
+            # mask_arr = load_and_orient_sitk(mask_path)
             
             # FIXED: Call consecutive pairs extractor!
-            imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
+            # imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
+            # resize
+            imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
             labels = [group] * len(imgs)
             pids = [p] * len(imgs)
             
@@ -416,10 +433,12 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
             
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            mask_arr = load_and_orient_sitk(mask_path) 
+            # mask_arr = load_and_orient_sitk(mask_path) 
             
             # FIXED: Call consecutive pairs extractor!
-            imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
+            # imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
+            # resize
+            imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
             
             all_images.extend(imgs)
             all_targets.extend(targets)
@@ -470,9 +489,11 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
             
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            mask_arr = load_and_orient_sitk(mask_path)
+            # mask_arr = load_and_orient_sitk(mask_path)
             # FIXED: Pass mask_arr into the extractor!
-            imgs, targets = extract_edes_pairs(img_arr, mask_arr, int(info['ED']), int(info['ES']), target_size)
+            # imgs, targets = extract_edes_pairs(img_arr, mask_arr, int(info['ED']), int(info['ES']), target_size)
+            # resize
+            imgs, targets = extract_edes_pairs(img_arr, 0, int(info['ED']), int(info['ES']), target_size)
             labels, pids = [info['Group']] * len(imgs), [p] * len(imgs)
             
             if p in val_set:
@@ -510,7 +531,9 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
             img_arr = load_and_orient_sitk(nii_path)
             mask_arr = load_and_orient_sitk(mask_path)
             # FIXED: Pass mask_arr into the extractor!
-            imgs, targets = extract_edes_pairs(img_arr, mask_arr, ed_idx, es_idx, target_size)
+            # imgs, targets = extract_edes_pairs(img_arr, mask_arr, ed_idx, es_idx, target_size)
+            # resize
+            imgs, targets = extract_edes_pairs(img_arr, 0, ed_idx, es_idx, target_size)
             
             all_images.extend(imgs)
             all_targets.extend(targets)
