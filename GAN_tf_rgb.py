@@ -370,12 +370,12 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                 
                 # --- NEW: Apply Paired Augmentation ---
                 # We only do this during training!
-                aug_es_batch, aug_ed_batch = augment_paired_batch(raw_es_batch, raw_ed_batch)
+                # aug_es_batch, aug_ed_batch = augment_paired_batch(raw_es_batch, raw_ed_batch)
 
                 # discriminator (Feed the AUGMENTED batches)
                 _, curr_D_loss, summary = sess.run([D_optimizer, D_loss, merge],
-                                               feed_dict={plh_es_true: aug_es_batch,
-                                                          plh_ed_true: aug_ed_batch,
+                                               feed_dict={plh_es_true: raw_es_batch,
+                                                          plh_ed_true: raw_ed_batch,
                                                           plh_is_training: True})
                 if j % 50 == 0:
                     _, curr_G_loss, curr_loss_appe, curr_loss_ed, curr_gen_frames, curr_gen_ed, summary = \
