@@ -3,1069 +3,520 @@ import cv2
 import numpy as np
 import pandas as pd
 import SimpleITK as sitk
+import random
 
+# =============================================================================
+# 1. CORE IMAGE UTILITIES
+# =============================================================================
 
 def load_and_orient_sitk(nii_path):
     """Safely loads 4D NIfTI images WITHOUT breaking the oblique SAX plane."""
     image = sitk.ReadImage(str(nii_path))
-    
-    # SimpleITK automatically handles the 4D shape mapping.
-    # A 4D (X, Y, Z, T) NIfTI will become a (T, Z, Y, X) numpy array.
-    img_arr = sitk.GetArrayFromImage(image)
-    
-    return img_arr
+    return sitk.GetArrayFromImage(image)
 
 def center_crop_or_pad(image, target_h=128, target_w=128):
     """Center crops an image, padding with zeros if it's smaller than the target size."""
     h, w = image.shape
-    
-    # 1. Pad if the image is smaller than the target size
-    pad_h = max(0, target_h - h)
-    pad_w = max(0, target_w - w)
+    pad_h, pad_w = max(0, target_h - h), max(0, target_w - w)
     
     if pad_h > 0 or pad_w > 0:
-        # Pad evenly on both sides
         image = np.pad(
             image, 
             ((pad_h // 2, pad_h - pad_h // 2), (pad_w // 2, pad_w - pad_w // 2)), 
-            mode='constant', 
-            constant_values=0
+            mode='constant', constant_values=0
         )
-        h, w = image.shape # Update dimensions after padding
+        h, w = image.shape
 
-    # 2. Calculate the center crop coordinates
     center_y, center_x = h // 2, w // 2
-    start_y = center_y - target_h // 2
-    start_x = center_x - target_w // 2
-    
-    # 3. Crop and return
+    start_y, start_x = center_y - target_h // 2, center_x - target_w // 2
     return image[start_y:start_y + target_h, start_x:start_x + target_w]
+
 def aspect_preserve_resize(image, target_h=128, target_w=128):
     """Resizes image to fit within target dimensions while preserving aspect ratio, then pads."""
     h, w = image.shape
-    
-    # 1. Calculate the scale factor to fit the image inside the target box
     scale = min(target_h / h, target_w / w)
     new_h, new_w = int(h * scale), int(w * scale)
     
-    # 2. Resize keeping the aspect ratio (no squashing)
     resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
     
-    # 3. Calculate padding needed to reach 128x128
-    pad_h = target_h - new_h
-    pad_w = target_w - new_w
-    
+    pad_h, pad_w = target_h - new_h, target_w - new_w
     top, bottom = pad_h // 2, pad_h - (pad_h // 2)
     left, right = pad_w // 2, pad_w - (pad_w // 2)
     
-    # 4. Pad with black pixels
     return cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
-def load_acdc_data(base_dir, target_size=(128, 128)):
-    training_dir = os.path.join(base_dir, 'database', 'training')
-    patients = sorted([d for d in os.listdir(training_dir) if os.path.isdir(os.path.join(training_dir, d))])
 
-    all_images = []
-    all_flows = []
+def normalize_frame_to_rgb(frame, p1, p99, center_y, center_x, target_size):
+    """Crops around the center of mass and normalizes a 2D frame."""
+    # Use our new cropping logic
+    frame_cropped = crop_around_center(frame.astype(np.float32), center_y, center_x, *target_size)
+    
+    if (p99 - p1) < 1e-7:
+        frame_norm = np.zeros(target_size, dtype=np.float32)
+    else:
+        frame_norm = np.clip((frame_cropped - p1) / (p99 - p1 + 1e-8), 0.0, 1.0)
+        
+    return np.stack([frame_norm] * 3, axis=-1)
 
-    print(f"Found {len(patients)} patients.")
 
-    for p in patients:
-        p_dir = os.path.join(training_dir, p)
-        cfg_path = os.path.join(p_dir, 'Info.cfg')
-        if not os.path.exists(cfg_path):
-            continue
+def get_slice_centers_from_mask(mask_arr):
+    """Calculates a single, fixed (center_y, center_x) for each Z-slice."""
+    # If M&M 4D mask (T, Z, H, W), collapse the Time dimension to get a union of all masks
+    if mask_arr.ndim == 4:
+        mask_collapsed = np.max(mask_arr, axis=0) 
+    else:
+        # If ACDC 3D mask (Z, H, W)
+        mask_collapsed = mask_arr
+        
+    Z, H, W = mask_collapsed.shape
+    centers = []
+    
+    for z in range(Z):
+        y_indices, x_indices = np.where(mask_collapsed[z] > 0)
+        if len(y_indices) > 0:
+            cy = int(np.round(np.mean(y_indices)))
+            cx = int(np.round(np.mean(x_indices)))
+            centers.append((cy, cx))
+        else:
+            # Fallback to absolute image center if no heart is found in this slice
+            centers.append((H // 2, W // 2))
             
-        # Check group
-        is_nor = False
+    return centers
+
+def crop_around_center(image, center_y, center_x, target_h=128, target_w=128):
+    """Crops and pads an image evenly around a specific coordinate."""
+    h, w = image.shape
+    half_h, half_w = target_h // 2, target_w // 2
+    
+    start_y, end_y = center_y - half_h, center_y + half_h
+    start_x, end_x = center_x - half_w, center_x + half_w
+    
+    # Pad with zeros if the bounding box goes outside the image dimensions
+    pad_top = max(0, -start_y)
+    pad_bottom = max(0, end_y - h)
+    pad_left = max(0, -start_x)
+    pad_right = max(0, end_x - w)
+    
+    if pad_top > 0 or pad_bottom > 0 or pad_left > 0 or pad_right > 0:
+        image = cv2.copyMakeBorder(image, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=0)
+        # Shift starting coordinates because the image just grew
+        start_y += pad_top; end_y += pad_top
+        start_x += pad_left; end_x += pad_left
+        
+    return image[start_y:end_y, start_x:end_x]
+
+# =============================================================================
+# 2. 4D SEQUENCE PROCESSORS (The core logic extracted)
+# =============================================================================
+
+def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128), motion_threshold=0.01):
+    """Extracts valid, moving (t, t+1) frame pairs from a 4D array."""
+    if img_arr.ndim != 4:
+        return [], []
+        
+    T, Z, _, _ = img_arr.shape
+    
+    # GET CENTERS FOR ALL Z-SLICES ONCE
+    centers = get_slice_centers_from_mask(mask_arr)
+    images, target_frames = [], []
+    
+    for z in range(Z):
+        cy, cx = centers[z] # Unpack the center
+        slice_seq = img_arr[:, z, :, :]
+        p1, p99 = np.percentile(slice_seq, 1), np.percentile(slice_seq, 99)
+        
+        # Pass cy and cx into the normalizer
+        processed = [normalize_frame_to_rgb(slice_seq[t], p1, p99, cy, cx, target_size) for t in range(T)]
+        
+        for t in range(T - 1):
+            f1, f2 = processed[t], processed[t+1]
+            if np.mean(np.abs(f2 - f1)) >= motion_threshold:
+                images.append(f1)
+                target_frames.append(f2)
+                
+    return images, target_frames
+
+def extract_edes_pairs(img_arr, mask_arr, ed_idx, es_idx, target_size=(128, 128), motion_threshold=0.01):
+    if img_arr.ndim != 4:
+        return [], []
+        
+    T, Z, _, _ = img_arr.shape
+    if max(ed_idx, es_idx) >= T or ed_idx == es_idx:
+        return [], []
+        
+    # GET CENTERS FOR ALL Z-SLICES ONCE
+    centers = get_slice_centers_from_mask(mask_arr)
+    images, target_frames = [], []
+    
+    for z in range(Z):
+        cy, cx = centers[z] # Unpack the center for this specific slice
+        
+        slice_seq = img_arr[:, z, :, :]
+        p1, p99 = np.percentile(slice_seq, 1), np.percentile(slice_seq, 99)
+        
+        # Pass cy and cx into the normalizer
+        es_rgb = normalize_frame_to_rgb(slice_seq[es_idx], p1, p99, cy, cx, target_size)
+        ed_rgb = normalize_frame_to_rgb(slice_seq[ed_idx], p1, p99, cy, cx, target_size)
+        
+        if np.mean(np.abs(ed_rgb - es_rgb)) >= motion_threshold:
+            images.append(es_rgb)
+            target_frames.append(ed_rgb)
+            
+    return images, target_frames
+
+def read_acdc_info(cfg_path):
+    """Safely reads ACDC Info.cfg files into a dictionary."""
+    info = {}
+    if os.path.exists(cfg_path):
         try:
             with open(cfg_path, 'r') as f:
                 for line in f:
-                    if line.strip().startswith('Group'):
-                        if 'NOR' in line:
-                            is_nor = True
-                        break
-        except Exception as e:
-            print(f"Error reading config for {p}: {e}")
-            continue
+                    if ':' in line:
+                        key, val = line.strip().split(':', 1)
+                        info[key.strip()] = val.strip()
+        except Exception:
+            pass
+    return info
+
+def _to_array(lst):
+    return np.array(lst) if len(lst) > 0 else np.array([])
+
+# =============================================================================
+# 3. DATASET LOADERS (Corrected)
+# =============================================================================
+
+def load_acdc_data(base_dir, target_size=(128, 128)):
+    training_dir = os.path.join(base_dir, 'database', 'training')
+    patients = sorted([d for d in os.listdir(training_dir) if os.path.isdir(os.path.join(training_dir, d))])
+    
+    all_images, all_targets = [], []
+    print(f"Found {len(patients)} patients in ACDC.")
+
+    for p in patients:
+        p_dir = os.path.join(training_dir, p)
+        info = read_acdc_info(os.path.join(p_dir, 'Info.cfg'))
         
-        if not is_nor:
+        if info.get('Group', '') != 'NOR' or 'ED' not in info:
             continue
             
-        print(f"Processing {p} (NOR)...")
-        # Load 4D
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
-        if not os.path.exists(nii_path):
-             continue
-             
+        # Find the ED mask filename to use as our center reference
+        ed_frame_str = str(info['ED']).zfill(2)
+        mask_path = os.path.join(p_dir, f'{p}_frame{ed_frame_str}_gt.nii.gz')
+        
+        if not os.path.exists(nii_path) or not os.path.exists(mask_path): 
+            continue
+            
         try:
             img_arr = load_and_orient_sitk(nii_path)
+            mask_arr = load_and_orient_sitk(mask_path) # Shape: (Z, H, W)
+            
+            # FIXED: Call consecutive pairs extractor, not ED/ES!
+            imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
+            all_images.extend(imgs)
+            all_targets.extend(targets)
         except Exception as e:
-            print(f"Error loading ... : {e}")
-            continue
+            print(f"Error loading {p}: {e}")
 
-        if len(img_arr.shape) == 4:
-            T, Z, H, W = img_arr.shape
-        else:
-             # Skip if not 4D
-             print(f"Skipping {p}: Shape {img_arr.shape} is not 4D")
-             continue
-        
-        for z in range(Z):
-            slice_seq = img_arr[:, z, :, :]  # Shape: (T, H, W)
-             
-            # --- APPLIED FIX: Robust 1st/99th Percentile Normalization ---
-            # 1. Calculate the 1st and 99th percentiles across the whole sequence
-            p1 = np.percentile(slice_seq, 1)
-            p99 = np.percentile(slice_seq, 99)
-            
-            # 2. Calculate the range (adding 1e-8 to prevent division by zero)
-            slice_range = p99 - p1 + 1e-8
-
-            # Pre-process frames for this slice
-            processed_frames = []
-            
-            for t in range(T):
-                frame = slice_seq[t]
-            
-                # 3. Resize the frame
-                frame_cropped = aspect_preserve_resize(
-                    frame.astype(np.float32), 
-                    target_size[0], 
-                    target_size[1]
-                )
-                    
-                # 4. Normalize using the percentiles (NOT the absolute min/max)
-                # If the slice is completely empty/black, p99-p1 will be ~0
-                if (p99 - p1) < 1e-7:
-                    frame_norm = np.zeros(target_size, dtype=np.float32)
-                else:
-                    frame_norm = (frame_cropped - p1) / slice_range
-                    
-                    # 5. Clip values strictly to [0.0, 1.0] 
-                    # ANY outlier pixel brighter than p99 is now forced to exactly 1.0
-                    # ANY outlier pixel darker than p1 is now forced to exactly 0.0
-                    frame_norm = np.clip(frame_norm, 0.0, 1.0)
-
-                frame_rgb = np.stack([frame_norm] * 3, axis=-1)
-                processed_frames.append(frame_rgb)
-
-            # ------------------------------
-                    
-            processed_frames_arr = np.array(processed_frames) # (T, 128, 128, 3)
-             
-            # Compute flows and pairs
-            # Create pairs of consecutive frames
-            # Create pairs of consecutive frames
-            for t in range(T - 1):
-                
-                # 1. Calculate simple pixel difference between the target and input frame
-                pixel_diff = np.abs(processed_frames_arr[t+1] - processed_frames_arr[t])
-
-                # 2. If the average pixel change is tiny, the heart isn't beating here. Skip it.
-                if np.mean(pixel_diff) < 0.01:  # Tune this threshold if needed
-                    continue
-
-                # 3. If it passes, append as normal
-                all_images.append(processed_frames_arr[t])
-                all_flows.append(processed_frames_arr[t+1]) # Appending the target RGB frame
-    return np.array(all_images), np.array(all_flows)
-
+    return _to_array(all_images), _to_array(all_targets)
 
 
 def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
-    """
-    Load M&M (Multi-centre, Multi-vendor, Multi-disease) cardiac MRI data.
-    Only subjects with Pathology == 'NOR' (normal) are loaded.
-
-    Parameters
-    ----------
-    mm_training_dir : str
-        Path to the M&M Training folder (Dataset_1/Training).
-        Expected to contain files like {ID}_sa.nii.gz.
-    csv_path : str
-        Path to the M&M CSV metadata file
-        (211230_M&Ms_Dataset_information_diagnosis_opendataset.csv).
-    target_size : tuple
-        (H, W) to which every frame is resized. Default matches load_acdc_data.
-
-    Returns
-    -------
-    all_images : np.ndarray  shape (N, H, W, 3)
-    all_flows  : np.ndarray  shape (N, H, W, 3)  [dx, dy, magnitude]
-    """
-    # Load CSV and build set of NOR subject IDs
     df = pd.read_csv(csv_path)
     nor_ids = set(df[df['Pathology'] == 'NOR']['External code'].tolist())
     print(f"Found {len(nor_ids)} M&M NOR subjects in CSV.")
 
-    all_images = []
-    all_flows  = []
-
-    # Gather all short-axis volume files (skip ground-truth masks)
-    sa_files = sorted([
-        f for f in os.listdir(mm_training_dir)
-        if f.endswith('_sa.nii.gz') and not f.endswith('_sa_gt.nii.gz')
-    ])
+    all_images, all_targets = [], []
+    sa_files = sorted([f for f in os.listdir(mm_training_dir) if f.endswith('_sa.nii.gz') and not f.endswith('_gt.nii.gz')])
 
     for fname in sa_files:
         subject_id = fname.replace('_sa.nii.gz', '')
-        if subject_id not in nor_ids:
+        # FIXED: Use nor_ids, not nor_info!
+        if subject_id not in nor_ids: 
             continue
-
-        print(f"Processing {subject_id} (M&M NOR)...")
+        
         nii_path = os.path.join(mm_training_dir, fname)
-
+        mask_path = os.path.join(mm_training_dir, fname.replace('_sa.nii.gz', '_sa_gt.nii.gz'))
+        
+        if not os.path.exists(mask_path) or not os.path.exists(nii_path):
+            continue
+            
         try:
             img_arr = load_and_orient_sitk(nii_path)
+            mask_arr = load_and_orient_sitk(mask_path) # Shape: (T, Z, H, W)
+            
+            # FIXED: Call consecutive pairs extractor!
+            imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
+            all_images.extend(imgs)
+            all_targets.extend(targets)
         except Exception as e:
-            print(f"Error loading ... : {e}")
-            continue
+            print(f"Error loading {subject_id}: {e}")
 
-        if len(img_arr.shape) == 4:
-            T, Z, H, W = img_arr.shape
-        else:
-            print(f"Skipping {subject_id}: unexpected shape {img_arr.shape}")
-            continue
-
-        for z in range(Z):
-            slice_seq = img_arr[:, z, :, :]  # (T, H, W)
-
-            # --- APPLIED FIX: Robust 1st/99th Percentile Normalization ---
-            p1 = np.percentile(slice_seq, 1)
-            p99 = np.percentile(slice_seq, 99)
-            slice_range = p99 - p1 + 1e-8
-
-            processed_frames = []
-            for t in range(T):
-                frame = slice_seq[t]
-                
-                # Resize the frame first
-                frame_cropped = aspect_preserve_resize(
-                    frame.astype(np.float32), 
-                    target_size[0], 
-                    target_size[1]
-                )
-                
-                # Normalize using the percentiles
-                if (p99 - p1) < 1e-7:
-                    frame_norm = np.zeros(target_size, dtype=np.float32)
-                else:
-                    frame_norm = (frame_cropped - p1) / slice_range
-                    # Clip values strictly to [0.0, 1.0] to crush extreme outliers
-                    frame_norm = np.clip(frame_norm, 0.0, 1.0) 
-
-                frame_rgb = np.stack([frame_norm] * 3, axis=-1)
-                processed_frames.append(frame_rgb)
-
-            processed_frames_arr = np.array(processed_frames)  # (T, H, W, 3)
-
-            # Create pairs of consecutive frames
-            for t in range(T - 1):
-                
-                # 1. Calculate simple pixel difference between the target and input frame
-                pixel_diff = np.abs(processed_frames_arr[t+1] - processed_frames_arr[t])
-
-                # 2. If the average pixel change is tiny, the heart isn't beating here. Skip it.
-                if np.mean(pixel_diff) < 0.01:  # Tune this threshold if needed
-                    continue
-
-                # 3. If it passes, append as normal
-                all_images.append(processed_frames_arr[t])
-                all_flows.append(processed_frames_arr[t+1]) # Appending the target RGB frame
-
-    return np.array(all_images), np.array(all_flows)
+    return _to_array(all_images), _to_array(all_targets)
 
 
 def load_combined_data(acdc_dir, mm_training_dir, csv_path, target_size=(128, 128)):
-    """
-    Load and concatenate NOR patients from both ACDC (Dataset_2) and
-    M&M (Dataset_1) datasets.
-
-    Parameters
-    ----------
-    acdc_dir       : str    root of Dataset_2 (contains 'database/training')
-    mm_training_dir: str    Dataset_1/Training folder
-    csv_path       : str    M&M CSV metadata file path
-    target_size    : tuple  (H, W) resize target, default (128, 128)
-
-    Returns
-    -------
-    images : np.ndarray  shape (N_acdc + N_mm, H, W, 3)
-    flows  : np.ndarray  shape (N_acdc + N_mm, H, W, 3)
-    """
     print("=== Loading ACDC NOR data ===")
-    acdc_images, acdc_flows = load_acdc_data(acdc_dir, target_size)
-    print(f"ACDC NOR samples: {len(acdc_images)}")
-
+    acdc_images, acdc_targets = load_acdc_data(acdc_dir, target_size)
+    
     print("\n=== Loading M&M NOR data ===")
-    mm_images, mm_flows = load_mm_data(mm_training_dir, csv_path, target_size)
-    print(f"M&M NOR samples:  {len(mm_images)}")
-
-    if len(acdc_images) == 0 and len(mm_images) == 0:
-        return np.array([]), np.array([])
-    elif len(acdc_images) == 0:
-        return mm_images, mm_flows
-    elif len(mm_images) == 0:
-        return acdc_images, acdc_flows
-
-    images = np.concatenate([acdc_images, mm_images], axis=0)
-    flows  = np.concatenate([acdc_flows,  mm_flows],  axis=0)
+    mm_images, mm_targets = load_mm_data(mm_training_dir, csv_path, target_size)
+    
+    images = _to_array(list(acdc_images) + list(mm_images))
+    targets = _to_array(list(acdc_targets) + list(mm_targets))
     print(f"\nCombined: {len(images)} samples total")
-    return images, flows
+    
+    return images, targets
 
-# ── ED/ES-only combined data loader ──────────────────────────────────────────
-# Loads NOR subjects from ACDC (Dataset_2) and M&M (Dataset_1).
-# For each subject and each z-slice:
-#   • input image  = End-Systole (ES) frame
-#   • next frame   = End-Diastole (ED) frame
-# Optical flow is computed from ES → ED.
 
-def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
-                              target_size=(128, 128)):
-    """
-    Load only End-Diastole (ED) and End-Systole (ES) frame pairs
-    from both ACDC (Dataset_2) and M&M (Dataset_1) NOR subjects.
-
-    Parameters
-    ----------
-    acdc_dir        : str   Root of Dataset_2 (contains 'database/training').
-    mm_training_dir : str   Dataset_1/Training folder.
-    csv_path        : str   M&M CSV metadata file path.
-    target_size     : tuple (H, W) resize target, default (128, 128).
-
-    Returns
-    -------
-    all_images : np.ndarray  shape (N, H, W, 3)  – ES frames (input)
-    all_flows  : np.ndarray  shape (N, H, W, 3)  – optical flow ES→ED
-    """
-
-    def _preprocess_frame(frame, p1, p99, target_size):
-        """Resize + percentile-normalise a single 2-D frame to RGB."""
-        frame_cropped = aspect_preserve_resize(
-                    frame.astype(np.float32), 
-                    target_size[0], 
-                    target_size[1]
-                )
-        if (p99 - p1) < 1e-7:
-            frame_norm = np.zeros(target_size, dtype=np.float32)
-        else:
-            frame_norm = np.clip((frame_cropped - p1) / (p99 - p1 + 1e-8),
-                                 0.0, 1.0)
-        return np.stack([frame_norm] * 3, axis=-1)  # (H, W, 3)
-
-    all_images = []
-    all_flows  = []
-
-    # ── ACDC ────────────────────────────────────────────────────────────────
+def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path, target_size=(128, 128)):
+    all_images, all_targets = [], []
+    
+    # --- ACDC ---
     training_dir = os.path.join(acdc_dir, 'database', 'training')
-    if not os.path.isdir(training_dir):
-        # fallback used by earlier experiments
+    if not os.path.isdir(training_dir): 
         training_dir = os.path.join(acdc_dir, 'database', 'training_test')
-    patients = sorted([d for d in os.listdir(training_dir)
-                       if os.path.isdir(os.path.join(training_dir, d))])
-    print(f"ACDC: found {len(patients)} patient folders.")
-
+    
+    patients = sorted([d for d in os.listdir(training_dir) if os.path.isdir(os.path.join(training_dir, d))])
     for p in patients:
-        p_dir    = os.path.join(training_dir, p)
-        cfg_path = os.path.join(p_dir, 'Info.cfg')
-        if not os.path.exists(cfg_path):
-            continue
-
-        # Read Group, ED, ES from Info.cfg
-        info = {}
-        try:
-            with open(cfg_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if ':' in line:
-                        key, val = line.split(':', 1)
-                        info[key.strip()] = val.strip()
-        except Exception as e:
-            print(f"Cannot read config for {p}: {e}")
-            continue
-
-        if info.get('Group', '') != 'NOR':
-            continue
-
-        try:
-            ed_idx = int(info['ED']) 
-            es_idx = int(info['ES'])
-        except (KeyError, ValueError) as e:
-            print(f"Missing ED/ES in {p}: {e}")
-            continue
-        if ed_idx == es_idx:
-            print(f"Skipping ACDC {p}: ED and ES frames are identical ({ed_idx})")
-            continue
+        p_dir = os.path.join(training_dir, p)
+        info = read_acdc_info(os.path.join(p_dir, 'Info.cfg'))
         
-        nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
-        if not os.path.exists(nii_path):
+        if info.get('Group', '') != 'NOR' or 'ED' not in info or 'ES' not in info:
             continue
-
-        try:
-            # Replaced with our new 4D-safe orientation helper
-            img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
-        except Exception as e:
-            print(f"Load error {p}: {e}")
-            continue
-
-        if img_arr.ndim != 4:
-            continue
-        T, Z, _, _ = img_arr.shape
-
-        if es_idx >= T or ed_idx >= T:
-            print(f"Skipping {p}: ED={ed_idx} or ES={es_idx} out of range T={T}")
-            continue
-
-        print(f"ACDC {p} (NOR)  ED={ed_idx}  ES={es_idx}")
-        for z in range(Z):
-            slice_seq = img_arr[:, z, :, :]  # (T, H, W)
-            p1  = np.percentile(slice_seq, 1)
-            p99 = np.percentile(slice_seq, 99)
-
-            es_frame_rgb = _preprocess_frame(slice_seq[es_idx], p1, p99, target_size)
-            ed_frame_rgb = _preprocess_frame(slice_seq[ed_idx], p1, p99, target_size)
-
-            # 1. Calculate pixel difference
-            pixel_diff = np.abs(ed_frame_rgb - es_frame_rgb)
             
-            # 2. Skip static slices
-            if np.mean(pixel_diff) < 0.01:
-                continue
-
-            # 3. Append if there is motion
-            all_images.append(es_frame_rgb)
-            all_flows.append(ed_frame_rgb)
-
-    print(f"ACDC NOR ED/ES samples: {len(all_images)}")
+        nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
+        ed_frame_str = str(info['ED']).zfill(2)
+        mask_path = os.path.join(p_dir, f'{p}_frame{ed_frame_str}_gt.nii.gz')
+        
+        if not os.path.exists(nii_path) or not os.path.exists(mask_path): 
+            continue
+            
+        try:
+            img_arr = load_and_orient_sitk(nii_path)
+            mask_arr = load_and_orient_sitk(mask_path)
+            # FIXED: Pass mask_arr into the extractor!
+            imgs, targets = extract_edes_pairs(img_arr, mask_arr, int(info['ED']), int(info['ES']), target_size)
+            all_images.extend(imgs)
+            all_targets.extend(targets)
+        except Exception as e:
+            print(f"Error processing ACDC {p}: {e}")
+            
     acdc_count = len(all_images)
+    print(f"ACDC NOR ED/ES samples: {acdc_count}")
 
-    # ── M&M ─────────────────────────────────────────────────────────────────
+    # --- M&M ---
     df = pd.read_csv(csv_path)
-    # Build lookup: subject_id -> (ed_idx, es_idx)
     nor_rows = df[df['Pathology'] == 'NOR'][['External code', 'ED', 'ES']]
-    nor_info = {row['External code']: (int(row['ED']), int(row['ES']))
-                for _, row in nor_rows.iterrows()}
-    print(f"M&M: found {len(nor_info)} NOR subjects in CSV.")
-
-    sa_files = sorted([f for f in os.listdir(mm_training_dir)
-                       if f.endswith('_sa.nii.gz') and not f.endswith('_sa_gt.nii.gz')])
-
+    nor_info = {row['External code']: (int(row['ED']), int(row['ES'])) for _, row in nor_rows.iterrows()}
+    
+    sa_files = sorted([f for f in os.listdir(mm_training_dir) if f.endswith('_sa.nii.gz') and not f.endswith('_gt.nii.gz')])
     for fname in sa_files:
         subject_id = fname.replace('_sa.nii.gz', '')
-        if subject_id not in nor_info:
-            continue
-
-        ed_idx, es_idx = nor_info[subject_id]
+        if subject_id not in nor_info: continue
+        
         nii_path = os.path.join(mm_training_dir, fname)
-
+        mask_path = os.path.join(mm_training_dir, fname.replace('_sa.nii.gz', '_sa_gt.nii.gz'))
+        
+        if not os.path.exists(nii_path) or not os.path.exists(mask_path): 
+            continue
+            
         try:
-            # Replaced with our new 4D-safe orientation helper
-            img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
+            ed_idx, es_idx = nor_info[subject_id]
+            img_arr = load_and_orient_sitk(nii_path)
+            mask_arr = load_and_orient_sitk(mask_path)
+            # FIXED: Pass mask_arr into the extractor!
+            imgs, targets = extract_edes_pairs(img_arr, mask_arr, ed_idx, es_idx, target_size)
+            all_images.extend(imgs)
+            all_targets.extend(targets)
         except Exception as e:
-            print(f"Load error {subject_id}: {e}")
-            continue
+            print(f"Error processing M&M {subject_id}: {e}")
 
-        if img_arr.ndim != 4:
-            continue
-        T, Z, _, _ = img_arr.shape
+    print(f"M&M NOR ED/ES samples: {len(all_images) - acdc_count}")
+    return _to_array(all_images), _to_array(all_targets)
 
-        if es_idx >= T or ed_idx >= T:
-            print(f"Skipping {subject_id}: ED={ed_idx} or ES={es_idx} out of range T={T}")
-            continue
-
-        print(f"M&M {subject_id} (NOR)  ED={ed_idx}  ES={es_idx}")
-        for z in range(Z):
-            slice_seq = img_arr[:, z, :, :]  # (T, H, W)
-            p1  = np.percentile(slice_seq, 1)
-            p99 = np.percentile(slice_seq, 99)
-
-            es_frame_rgb = _preprocess_frame(slice_seq[es_idx], p1, p99, target_size)
-            ed_frame_rgb = _preprocess_frame(slice_seq[ed_idx], p1, p99, target_size)
-
-            all_images.append(es_frame_rgb)
-            all_flows.append(ed_frame_rgb) # Appending the target ED RGB frame
-
-    mm_count = len(all_images) - acdc_count
-    print(f"M&M NOR ED/ES samples: {mm_count}")
-    print(f"Combined ED/ES samples: {len(all_images)}")
-
-    if len(all_images) == 0:
-        return np.array([]), np.array([])
-    return np.array(all_images), np.array(all_flows)
-
-
-# ── ACDC test-set loader with validation / test split ────────────────────────
-#
-# The ACDC *testing* set (database/testing) has 50 patients:
-#   10 NOR  ·  10 MINF  ·  10 DCM  ·  10 HCM  ·  10 RV
-#
-# This loader randomly selects (with a fixed seed):
-#   • Validation:  4 NOR  +  2 MINF  +  2 DCM  +  2 HCM  +  2 RV  = 12 patients
-#   • Test:        6 NOR  +  8 MINF  +  8 DCM  +  8 HCM  +  8 RV  = 38 patients
-#
-# Each split is processed identically to load_acdc_data (consecutive frame
-# pairs with optical flow).
-# ─────────────────────────────────────────────────────────────────────────────
 
 def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
-    """
-    Load the ACDC *testing* set and split it into validation and test subsets.
-
-    Split strategy (fixed random seed for reproducibility):
-        Validation — 4 NOR + 2 per disease group (MINF, DCM, HCM, RV) = 12 patients
-        Test       — remaining 6 NOR + 8 per disease group            = 38 patients
-
-    Parameters
-    ----------
-    base_dir    : str    Root of Dataset_2 (contains 'database/testing').
-    target_size : tuple  (H, W) resize target, default (128, 128).
-    seed        : int    Random seed for reproducible patient selection.
-
-    Returns
-    -------
-    val_images   : np.ndarray  shape (N_val, H, W, 3)
-    val_flows    : np.ndarray  shape (N_val, H, W, 3)
-    val_labels   : list[str]   per-sample disease group label
-    val_pids     : list[str]   per-sample patient ID
-
-    test_images  : np.ndarray  shape (N_test, H, W, 3)
-    test_flows   : np.ndarray  shape (N_test, H, W, 3)
-    test_labels  : list[str]   per-sample disease group label
-    test_pids    : list[str]   per-sample patient ID
-    """
-    import random
-
     testing_dir = os.path.join(base_dir, 'database', 'testing')
-    if not os.path.isdir(testing_dir):
-        raise FileNotFoundError(f"Testing directory not found: {testing_dir}")
-
-    # ── 1. Scan patients and group by disease ──────────────────────────────
-    group_patients = {}  # e.g. {'NOR': ['patient102', ...], 'DCM': [...], ...}
-    patient_info   = {}  # patient_id -> {'group': ..., 'ED': ..., 'ES': ...}
-
-    all_patient_dirs = sorted([
-        d for d in os.listdir(testing_dir)
-        if os.path.isdir(os.path.join(testing_dir, d))
-    ])
-
+    all_patient_dirs = sorted([d for d in os.listdir(testing_dir) if os.path.isdir(os.path.join(testing_dir, d))])
+    
+    group_patients, patient_info = {}, {}
     for p in all_patient_dirs:
-        cfg_path = os.path.join(testing_dir, p, 'Info.cfg')
-        if not os.path.exists(cfg_path):
-            continue
+        info = read_acdc_info(os.path.join(testing_dir, p, 'Info.cfg'))
+        if group := info.get('Group'):
+            patient_info[p] = info
+            group_patients.setdefault(group, []).append(p)
 
-        info = {}
-        try:
-            with open(cfg_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if ':' in line:
-                        key, val = line.split(':', 1)
-                        info[key.strip()] = val.strip()
-        except Exception as e:
-            print(f"Cannot read config for {p}: {e}")
-            continue
-
-        group = info.get('Group', '')
-        if group == '':
-            continue
-
-        patient_info[p] = info
-        group_patients.setdefault(group, []).append(p)
-
-    print("ACDC testing set composition:")
-    for g in sorted(group_patients):
-        print(f"  {g}: {len(group_patients[g])} patients -> {group_patients[g]}")
-
-    # ── 2. Split into val / test patient lists ─────────────────────────────
     rng = random.Random(seed)
-
-    val_patient_set  = set()
-    test_patient_set = set()
-
-    # Number of patients to sample for validation per group
-    val_counts = {'NOR': 4, 'MINF': 2, 'DCM': 2, 'HCM': 2, 'RV': 2}
-
-    for group, patients_in_group in sorted(group_patients.items()):
-        n_val = val_counts.get(group, 2)  # default 2 for any unexpected group
-        shuffled = patients_in_group[:]
-        rng.shuffle(shuffled)
-        val_patients  = shuffled[:n_val]
-        test_patients = shuffled[n_val:]
-        val_patient_set.update(val_patients)
-        test_patient_set.update(test_patients)
-
-    print(f"\nValidation patients ({len(val_patient_set)}): "
-          f"{sorted(val_patient_set)}")
-    print(f"Test patients ({len(test_patient_set)}): "
-          f"{sorted(test_patient_set)}")
-
-    # ── 3. Processing helper (same logic as load_acdc_data) ────────────────
-    def _process_patient(p, p_dir, group):
-        """Return (images, flows, labels, pids) lists for one patient."""
-        nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
-        if not os.path.exists(nii_path):
-            return [], [], [], []
-
-        try:
-            # Replaced with our new 4D-safe orientation helper
-            img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
-        except Exception as e:
-            print(f"Load error {p}: {e}")
-            return [], [], [], []
-
-        if img_arr.ndim != 4:
-            print(f"Skipping {p}: shape {img_arr.shape} is not 4D")
-            return [], [], [], []
-
-        T, Z, H, W = img_arr.shape
-
-        images, flows, labels, pids = [], [], [], []
-
-        for z in range(Z):
-            slice_seq = img_arr[:, z, :, :]  # (T, H, W)
-            p1  = np.percentile(slice_seq, 1)
-            p99 = np.percentile(slice_seq, 99)
-            slice_range = p99 - p1 + 1e-8
-
-            processed_frames = []
-            for t in range(T):
-                frame = slice_seq[t]
-                frame_cropped = aspect_preserve_resize(
-                    frame.astype(np.float32), 
-                    target_size[0], 
-                    target_size[1]
-                )
-                if (p99 - p1) < 1e-7:
-                    frame_norm = np.zeros(target_size, dtype=np.float32)
-                else:
-                    frame_norm = np.clip(
-                        (frame_cropped - p1) / slice_range, 0.0, 1.0
-                    )
-                frame_rgb = np.stack([frame_norm] * 3, axis=-1)
-                processed_frames.append(frame_rgb)
-
-            processed_frames_arr = np.array(processed_frames)  # (T, H, W, 3)
-
-            # Create pairs of consecutive frames
-            for t in range(T - 1):
-                
-                # 1. Calculate simple pixel difference between the target and input frame
-                pixel_diff = np.abs(processed_frames_arr[t+1] - processed_frames_arr[t])
-
-                # 2. If the average pixel change is tiny, the heart isn't beating here. Skip it.
-                if np.mean(pixel_diff) < 0.01:  # Tune this threshold if needed
-                    continue
-
-                # 3. If it passes, append as normal
-                images.append(processed_frames_arr[t])
-                flows.append(processed_frames_arr[t+1]) # Appending the target RGB frame
-                labels.append(group)
-                pids.append(p)
-
-        return images, flows, labels, pids
-
-    # ── 4. Load and process each split ─────────────────────────────────────
-    val_images,  val_flows,  val_labels,  val_pids  = [], [], [], []
-    test_images, test_flows, test_labels, test_pids = [], [], [], []
-
-    for p in sorted(val_patient_set | test_patient_set):
-        p_dir = os.path.join(testing_dir, p)
-        group = patient_info[p]['Group']
-        print(f"Processing {p} ({group})...")
-
-        imgs, fls, lbls, pds = _process_patient(p, p_dir, group)
-
-        if p in val_patient_set:
-            val_images.extend(imgs)
-            val_flows.extend(fls)
-            val_labels.extend(lbls)
-            val_pids.extend(pds)
-        else:
-            test_images.extend(imgs)
-            test_flows.extend(fls)
-            test_labels.extend(lbls)
-            test_pids.extend(pds)
-
-    print(f"\n{'='*50}")
-    print(f"Validation: {len(val_images)} samples from {len(val_patient_set)} patients")
-    print(f"Test:       {len(test_images)} samples from {len(test_patient_set)} patients")
-
-    def _to_array(lst):
-        return np.array(lst) if len(lst) > 0 else np.array([])
-
-    return (_to_array(val_images),  _to_array(val_flows),  val_labels,  val_pids,
-            _to_array(test_images), _to_array(test_flows), test_labels, test_pids)
-
-
-# ── M&M Validation loader (ALL pathologies) ─────────────────────────────────
-#
-# Loads every subject in the M&M *Validation* folder (Dataset_1/Validation),
-# regardless of pathology.  Returns per-sample disease labels and patient IDs
-# so downstream code can analyse each group separately.
-# ─────────────────────────────────────────────────────────────────────────────
-
-def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
-    """
-    Load ALL subjects from the M&M Validation folder (every pathology).
-
-    Parameters
-    ----------
-    mm_val_dir  : str    Path to Dataset_1/Validation.
-    csv_path    : str    Path to the M&M CSV metadata file.
-    target_size : tuple  (H, W) resize target, default (128, 128).
-
-    Returns
-    -------
-    all_images : np.ndarray   shape (N, H, W, 3)
-    all_flows  : np.ndarray   shape (N, H, W, 3)
-    all_labels : list[str]    per-sample pathology label
-    all_pids   : list[str]    per-sample subject ID
-    """
-    # Build lookup: subject_id -> pathology
-    df = pd.read_csv(csv_path)
-    pathology_map = dict(zip(df['External code'], df['Pathology']))
-
-    all_images = []
-    all_flows  = []
-    all_labels = []
-    all_pids   = []
-
-    sa_files = sorted([
-        f for f in os.listdir(mm_val_dir)
-        if f.endswith('_sa.nii.gz') and not f.endswith('_sa_gt.nii.gz')
-    ])
-    print(f"M&M Validation: found {len(sa_files)} subjects.")
-
-    for fname in sa_files:
-        subject_id = fname.replace('_sa.nii.gz', '')
-        pathology  = pathology_map.get(subject_id, 'UNKNOWN')
-        nii_path   = os.path.join(mm_val_dir, fname)
-
-        try:
-            # Replaced with our new 4D-safe orientation helper
-            img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
-        except Exception as e:
-            print(f"Load error {subject_id}: {e}")
-            continue
-
-        if img_arr.ndim != 4:
-            print(f"Skipping {subject_id}: unexpected shape {img_arr.shape}")
-            continue
-
-        T, Z, H, W = img_arr.shape
-        print(f"Processing {subject_id} ({pathology})...")
-
-        for z in range(Z):
-            slice_seq = img_arr[:, z, :, :]  # (T, H, W)
-            p1  = np.percentile(slice_seq, 1)
-            p99 = np.percentile(slice_seq, 99)
-            slice_range = p99 - p1 + 1e-8
-
-            processed_frames = []
-            for t in range(T):
-                frame = slice_seq[t]
-                frame_cropped = aspect_preserve_resize(
-                    frame.astype(np.float32), 
-                    target_size[0], 
-                    target_size[1]
-                )
-                if (p99 - p1) < 1e-7:
-                    frame_norm = np.zeros(target_size, dtype=np.float32)
-                else:
-                    frame_norm = np.clip(
-                        (frame_cropped - p1) / slice_range, 0.0, 1.0
-                    )
-                frame_rgb = np.stack([frame_norm] * 3, axis=-1)
-                processed_frames.append(frame_rgb)
-
-            processed_frames_arr = np.array(processed_frames)  # (T, H, W, 3)
-
-            # Create pairs of consecutive frames
-            for t in range(T - 1):
-                
-                # 1. Calculate simple pixel difference between the target and input frame
-                pixel_diff = np.abs(processed_frames_arr[t+1] - processed_frames_arr[t])
-
-                # 2. If the average pixel change is tiny, the heart isn't beating here. Skip it.
-                if np.mean(pixel_diff) < 0.01:  # Tune this threshold if needed
-                    continue
-
-                # 3. If it passes, append as normal
-                all_images.append(processed_frames_arr[t])
-                all_flows.append(processed_frames_arr[t+1]) # Appending the target RGB frame
-                all_labels.append(pathology)
-                all_pids.append(subject_id)
-
-    print(f"M&M Validation total: {len(all_images)} samples from {len(sa_files)} subjects")
-
-    def _to_array(lst):
-        return np.array(lst) if len(lst) > 0 else np.array([])
-
-    return _to_array(all_images), _to_array(all_flows), all_labels, all_pids
-
-
-# ── ACDC test-set loader: ED/ES only, with val / test split ─────────────────
-#
-# Same patient split as load_acdc_test_val_data, but loads ONLY the
-# End-Diastole (ED) and End-Systole (ES) frame pair per z-slice.
-# Flow is computed ES → ED (matching load_combined_ed_es_data).
-# ─────────────────────────────────────────────────────────────────────────────
-
-def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
-    """
-    Load the ACDC *testing* set using only ED/ES frames and split into
-    validation and test subsets.
-
-    Split strategy (fixed random seed):
-        Validation — 4 NOR + 2 per disease group (MINF, DCM, HCM, RV) = 12 patients
-        Test       — remaining 6 NOR + 8 per disease group            = 38 patients
-
-    Returns
-    -------
-    val_images, val_flows, val_labels, val_pids,
-    test_images, test_flows, test_labels, test_pids
-    """
-    import random
-
-    def _preprocess_frame(frame, p1, p99, target_size):
-        frame_cropped = aspect_preserve_resize(
-                    frame.astype(np.float32), 
-                    target_size[0], 
-                    target_size[1]
-                )
-        if (p99 - p1) < 1e-7:
-            return np.stack([np.zeros(target_size, dtype=np.float32)] * 3, axis=-1)
-        frame_norm = np.clip((frame_cropped - p1) / (p99 - p1 + 1e-8), 0.0, 1.0)
-        return np.stack([frame_norm] * 3, axis=-1)
-
-    testing_dir = os.path.join(base_dir, 'database', 'testing')
-    if not os.path.isdir(testing_dir):
-        raise FileNotFoundError(f"Testing directory not found: {testing_dir}")
-
-    # ── 1. Scan patients and group by disease ──────────────────────────────
-    group_patients = {}
-    patient_info   = {}
-
-    for p in sorted(os.listdir(testing_dir)):
-        p_dir = os.path.join(testing_dir, p)
-        if not os.path.isdir(p_dir):
-            continue
-        cfg_path = os.path.join(p_dir, 'Info.cfg')
-        if not os.path.exists(cfg_path):
-            continue
-        info = {}
-        try:
-            with open(cfg_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if ':' in line:
-                        key, val = line.split(':', 1)
-                        info[key.strip()] = val.strip()
-        except Exception as e:
-            print(f"Cannot read config for {p}: {e}")
-            continue
-        group = info.get('Group', '')
-        if group == '':
-            continue
-        patient_info[p] = info
-        group_patients.setdefault(group, []).append(p)
-
-    print("ACDC testing set composition:")
-    for g in sorted(group_patients):
-        print(f"  {g}: {len(group_patients[g])} patients")
-
-    # ── 2. Split ───────────────────────────────────────────────────────────
-    rng = random.Random(seed)
-    val_patient_set, test_patient_set = set(), set()
+    val_set, test_set = set(), set()
     val_counts = {'NOR': 4, 'MINF': 2, 'DCM': 2, 'HCM': 2, 'RV': 2}
 
     for group, pats in sorted(group_patients.items()):
-        n_val = val_counts.get(group, 2)
         shuffled = pats[:]
         rng.shuffle(shuffled)
-        val_patient_set.update(shuffled[:n_val])
-        test_patient_set.update(shuffled[n_val:])
+        n_val = val_counts.get(group, 2)
+        val_set.update(shuffled[:n_val])
+        test_set.update(shuffled[n_val:])
 
-    print(f"\nValidation patients ({len(val_patient_set)}): {sorted(val_patient_set)}")
-    print(f"Test patients ({len(test_patient_set)}): {sorted(test_patient_set)}")
+    val_imgs, val_targets, val_lbls, val_pids = [], [], [], []
+    test_imgs, test_targets, test_lbls, test_pids = [], [], [], []
 
-    # ── 3. Process each patient (ED/ES only) ───────────────────────────────
-    def _process_patient_ed_es(p, p_dir, group):
-        info = patient_info[p]
-        try:
-            ed_idx = int(info['ED'])
-            es_idx = int(info['ES'])
-        except (KeyError, ValueError) as e:
-            print(f"Missing ED/ES in {p}: {e}")
-            return [], [], [], []
-        if ed_idx == es_idx:
-            print(f"Skipping {p}: ED and ES identical ({ed_idx})")
-            return [], [], [], []
-
-        nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
-        if not os.path.exists(nii_path):
-            return [], [], [], []
-
-        try:
-            # Replaced with our new 4D-safe orientation helper
-            img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
-        except Exception as e:
-            print(f"Load error {p}: {e}")
-            return [], [], [], []
-        if img_arr.ndim != 4:
-            return [], [], [], []
-        T, Z, _, _ = img_arr.shape
-        if es_idx >= T or ed_idx >= T:
-            print(f"Skipping {p}: ED={ed_idx} or ES={es_idx} out of range T={T}")
-            return [], [], [], []
-
-        images, flows, labels, pids = [], [], [], []
-        print(f"  {p} ({group})  ED={ed_idx}  ES={es_idx}")
-
-        for z in range(Z):
-            slice_seq = img_arr[:, z, :, :]
-            p1  = np.percentile(slice_seq, 1)
-            p99 = np.percentile(slice_seq, 99)
-
-            es_rgb = _preprocess_frame(slice_seq[es_idx], p1, p99, target_size)
-            ed_rgb = _preprocess_frame(slice_seq[ed_idx], p1, p99, target_size)
-
-            pixel_diff = np.abs(ed_rgb - es_rgb)
-            if np.mean(pixel_diff) < 0.01:
-                continue
-
-            images.append(es_rgb)
-            flows.append(ed_rgb) 
-            labels.append(group)
-            pids.append(p)
-        return images, flows, labels, pids
-
-    # ── 4. Load each split ─────────────────────────────────────────────────
-    val_images,  val_flows,  val_labels,  val_pids  = [], [], [], []
-    test_images, test_flows, test_labels, test_pids = [], [], [], []
-
-    for p in sorted(val_patient_set | test_patient_set):
+    for p in sorted(val_set | test_set):
         p_dir = os.path.join(testing_dir, p)
-        group = patient_info[p]['Group']
-        imgs, fls, lbls, pds = _process_patient_ed_es(p, p_dir, group)
+        info = patient_info[p]
+        group = info['Group']
+        
+        if 'ED' not in info:
+            continue
+            
+        nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
+        ed_frame_str = str(info['ED']).zfill(2)
+        mask_path = os.path.join(p_dir, f'{p}_frame{ed_frame_str}_gt.nii.gz')
+        
+        if not os.path.exists(nii_path) or not os.path.exists(mask_path): 
+            continue
+            
+        try:
+            img_arr = load_and_orient_sitk(nii_path)
+            mask_arr = load_and_orient_sitk(mask_path)
+            
+            # FIXED: Call consecutive pairs extractor!
+            imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
+            labels = [group] * len(imgs)
+            pids = [p] * len(imgs)
+            
+            if p in val_set:
+                val_imgs.extend(imgs); val_targets.extend(targets)
+                val_lbls.extend(labels); val_pids.extend(pids)
+            else:
+                test_imgs.extend(imgs); test_targets.extend(targets)
+                test_lbls.extend(labels); test_pids.extend(pids)
+        except Exception as e:
+            print(f"Error processing {p}: {e}")
 
-        if p in val_patient_set:
-            val_images.extend(imgs);  val_flows.extend(fls)
-            val_labels.extend(lbls);  val_pids.extend(pds)
-        else:
-            test_images.extend(imgs); test_flows.extend(fls)
-            test_labels.extend(lbls); test_pids.extend(pds)
-
-    print(f"\nValidation: {len(val_images)} ED/ES samples from {len(val_patient_set)} patients")
-    print(f"Test:       {len(test_images)} ED/ES samples from {len(test_patient_set)} patients")
-
-    def _to_array(lst):
-        return np.array(lst) if len(lst) > 0 else np.array([])
-
-    return (_to_array(val_images),  _to_array(val_flows),  val_labels,  val_pids,
-            _to_array(test_images), _to_array(test_flows), test_labels, test_pids)
+    return (_to_array(val_imgs), _to_array(val_targets), val_lbls, val_pids,
+            _to_array(test_imgs), _to_array(test_targets), test_lbls, test_pids)
 
 
-# ── M&M Validation loader: ED/ES only, ALL pathologies ──────────────────────
-#
-# Loads every subject in Dataset_1/Validation using only the ED and ES frames.
-# Flow is computed ES → ED.
-# ─────────────────────────────────────────────────────────────────────────────
-
-def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
-    """
-    Load ALL subjects from M&M Validation folder using only ED/ES frames.
-
-    Parameters
-    ----------
-    mm_val_dir  : str    Path to Dataset_1/Validation.
-    csv_path    : str    Path to M&M CSV metadata file.
-    target_size : tuple  (H, W) resize target, default (128, 128).
-
-    Returns
-    -------
-    all_images : np.ndarray   shape (N, H, W, 3)   – ES frames
-    all_flows  : np.ndarray   shape (N, H, W, 3)   – optical flow ES→ED
-    all_labels : list[str]    per-sample pathology label
-    all_pids   : list[str]    per-sample subject ID
-    """
-    def _preprocess_frame(frame, p1, p99, target_size):
-        frame_cropped = aspect_preserve_resize(
-                    frame.astype(np.float32), 
-                    target_size[0], 
-                    target_size[1]
-                )
-        if (p99 - p1) < 1e-7:
-            return np.stack([np.zeros(target_size, dtype=np.float32)] * 3, axis=-1)
-        frame_norm = np.clip((frame_cropped - p1) / (p99 - p1 + 1e-8), 0.0, 1.0)
-        return np.stack([frame_norm] * 3, axis=-1)
-
+def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
     df = pd.read_csv(csv_path)
-    # Build lookup: subject_id -> (ed_idx, es_idx, pathology)
-    subject_lookup = {}
-    for _, row in df.iterrows():
-        sid = row['External code']
-        subject_lookup[sid] = (int(row['ED']), int(row['ES']), row['Pathology'])
-
-    all_images, all_flows, all_labels, all_pids = [], [], [], []
-
-    sa_files = sorted([
-        f for f in os.listdir(mm_val_dir)
-        if f.endswith('_sa.nii.gz') and not f.endswith('_sa_gt.nii.gz')
-    ])
-    print(f"M&M Validation (ED/ES): found {len(sa_files)} subjects.")
+    pathology_map = dict(zip(df['External code'], df['Pathology']))
+    
+    all_images, all_targets, all_labels, all_pids = [], [], [], []
+    sa_files = sorted([f for f in os.listdir(mm_val_dir) if f.endswith('_sa.nii.gz') and not f.endswith('_gt.nii.gz')])
 
     for fname in sa_files:
         subject_id = fname.replace('_sa.nii.gz', '')
-        if subject_id not in subject_lookup:
-            print(f"Skipping {subject_id}: not found in CSV")
-            continue
-
-        ed_idx, es_idx, pathology = subject_lookup[subject_id]
-        if ed_idx == es_idx:
-            print(f"Skipping {subject_id}: ED and ES identical ({ed_idx})")
-            continue
-
+        pathology = pathology_map.get(subject_id, 'UNKNOWN')
+        
         nii_path = os.path.join(mm_val_dir, fname)
-        try:
-            # Replaced with our new 4D-safe orientation helper
-            img_arr = load_and_orient_sitk(nii_path)  # Returns (T, Z, Y, X)
-        except Exception as e:
-            print(f"Load error {subject_id}: {e}")
+        mask_path = os.path.join(mm_val_dir, fname.replace('_sa.nii.gz', '_sa_gt.nii.gz'))
+        
+        if not os.path.exists(nii_path) or not os.path.exists(mask_path):
             continue
-
-        if img_arr.ndim != 4:
-            print(f"Skipping {subject_id}: unexpected shape {img_arr.shape}")
-            continue
-
-        T, Z, _, _ = img_arr.shape
-        if es_idx >= T or ed_idx >= T:
-            print(f"Skipping {subject_id}: ED={ed_idx} or ES={es_idx} out of range T={T}")
-            continue
-
-        print(f"  {subject_id} ({pathology})  ED={ed_idx}  ES={es_idx}")
-
-        for z in range(Z):
-            slice_seq = img_arr[:, z, :, :]
-            p1  = np.percentile(slice_seq, 1)
-            p99 = np.percentile(slice_seq, 99)
-
-            es_rgb = _preprocess_frame(slice_seq[es_idx], p1, p99, target_size)
-            ed_rgb = _preprocess_frame(slice_seq[ed_idx], p1, p99, target_size)
-
-            pixel_diff = np.abs(ed_rgb - es_rgb)
-            if np.mean(pixel_diff) < 0.01:
-                continue
             
-            # FIXED list names from 'images' to 'all_images'
-            all_images.append(es_rgb)
-            all_flows.append(ed_rgb) 
-            all_labels.append(pathology)
-            all_pids.append(subject_id)
+        try:
+            img_arr = load_and_orient_sitk(nii_path)
+            mask_arr = load_and_orient_sitk(mask_path) 
+            
+            # FIXED: Call consecutive pairs extractor!
+            imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
+            
+            all_images.extend(imgs)
+            all_targets.extend(targets)
+            all_labels.extend([pathology] * len(imgs))
+            all_pids.extend([subject_id] * len(imgs))
+        except Exception as e:
+            print(f"Error loading {subject_id}: {e}")
 
-    print(f"M&M Validation ED/ES total: {len(all_images)} samples from {len(sa_files)} subjects")
+    return _to_array(all_images), _to_array(all_targets), all_labels, all_pids
 
-    def _to_array(lst):
-        return np.array(lst) if len(lst) > 0 else np.array([])
 
-    return _to_array(all_images), _to_array(all_flows), all_labels, all_pids
+def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
+    testing_dir = os.path.join(base_dir, 'database', 'testing')
+    all_patient_dirs = sorted([d for d in os.listdir(testing_dir) if os.path.isdir(os.path.join(testing_dir, d))])
+    
+    group_patients, patient_info = {}, {}
+    for p in all_patient_dirs:
+        info = read_acdc_info(os.path.join(testing_dir, p, 'Info.cfg'))
+        if group := info.get('Group'):
+            patient_info[p] = info
+            group_patients.setdefault(group, []).append(p)
+
+    rng = random.Random(seed)
+    val_set, test_set = set(), set()
+    val_counts = {'NOR': 4, 'MINF': 2, 'DCM': 2, 'HCM': 2, 'RV': 2}
+
+    for group, pats in sorted(group_patients.items()):
+        shuffled = pats[:]
+        rng.shuffle(shuffled)
+        n_val = val_counts.get(group, 2)
+        val_set.update(shuffled[:n_val])
+        test_set.update(shuffled[n_val:])
+
+    val_imgs, val_targets, val_lbls, val_pids = [], [], [], []
+    test_imgs, test_targets, test_lbls, test_pids = [], [], [], []
+
+    for p in sorted(val_set | test_set):
+        p_dir = os.path.join(testing_dir, p)
+        info = patient_info[p]
+        if 'ED' not in info or 'ES' not in info: continue
+            
+        nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
+        ed_frame_str = str(info['ED']).zfill(2)
+        mask_path = os.path.join(p_dir, f'{p}_frame{ed_frame_str}_gt.nii.gz')
+        
+        if not os.path.exists(nii_path) or not os.path.exists(mask_path): 
+            continue
+            
+        try:
+            img_arr = load_and_orient_sitk(nii_path)
+            mask_arr = load_and_orient_sitk(mask_path)
+            # FIXED: Pass mask_arr into the extractor!
+            imgs, targets = extract_edes_pairs(img_arr, mask_arr, int(info['ED']), int(info['ES']), target_size)
+            labels, pids = [info['Group']] * len(imgs), [p] * len(imgs)
+            
+            if p in val_set:
+                val_imgs.extend(imgs); val_targets.extend(targets)
+                val_lbls.extend(labels); val_pids.extend(pids)
+            else:
+                test_imgs.extend(imgs); test_targets.extend(targets)
+                test_lbls.extend(labels); test_pids.extend(pids)
+        except Exception as e:
+            print(f"Error processing {p}: {e}")
+
+    return (_to_array(val_imgs), _to_array(val_targets), val_lbls, val_pids,
+            _to_array(test_imgs), _to_array(test_targets), test_lbls, test_pids)
+
+
+def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
+    df = pd.read_csv(csv_path)
+    subject_lookup = {row['External code']: (int(row['ED']), int(row['ES']), row['Pathology']) for _, row in df.iterrows()}
+    
+    all_images, all_targets, all_labels, all_pids = [], [], [], []
+    sa_files = sorted([f for f in os.listdir(mm_val_dir) if f.endswith('_sa.nii.gz') and not f.endswith('_gt.nii.gz')])
+
+    for fname in sa_files:
+        subject_id = fname.replace('_sa.nii.gz', '')
+        if subject_id not in subject_lookup: continue
+            
+        ed_idx, es_idx, pathology = subject_lookup[subject_id]
+        nii_path = os.path.join(mm_val_dir, fname)
+        mask_path = os.path.join(mm_val_dir, fname.replace('_sa.nii.gz', '_sa_gt.nii.gz'))
+        
+        if not os.path.exists(nii_path) or not os.path.exists(mask_path): 
+            continue
+
+        try:
+            img_arr = load_and_orient_sitk(nii_path)
+            mask_arr = load_and_orient_sitk(mask_path)
+            # FIXED: Pass mask_arr into the extractor!
+            imgs, targets = extract_edes_pairs(img_arr, mask_arr, ed_idx, es_idx, target_size)
+            
+            all_images.extend(imgs)
+            all_targets.extend(targets)
+            all_labels.extend([pathology] * len(imgs))
+            all_pids.extend([subject_id] * len(imgs))
+        except Exception as e:
+            print(f"Error processing {subject_id}: {e}")
+
+    return _to_array(all_images), _to_array(all_targets), all_labels, all_pids
