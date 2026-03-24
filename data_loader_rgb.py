@@ -129,7 +129,8 @@ def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128), motion_
         # Pass cy and cx into the normalizer
         #processed = [normalize_frame_to_rgb(slice_seq[t], p1, p99, cy, cx, target_size) for t in range(T)]
         # Use aspect preserve resize
-        processed = [normalize_frame_to_rgb(slice_seq[t], p1, p99, target_size) for t in range(T)]
+        # Pass 0, 0 for center_y and center_x
+        processed = [normalize_frame_to_rgb(slice_seq[t], p1, p99, 0, 0, target_size) for t in range(T)]
         
         for t in range(T - 1):
             f1, f2 = processed[t], processed[t+1]
@@ -161,8 +162,8 @@ def extract_edes_pairs(img_arr,mask_arr, ed_idx, es_idx, target_size=(128, 128),
         # es_rgb = normalize_frame_to_rgb(slice_seq[es_idx], p1, p99, cy, cx, target_size)
         # ed_rgb = normalize_frame_to_rgb(slice_seq[ed_idx], p1, p99, cy, cx, target_size)
         # resize
-        es_rgb = normalize_frame_to_rgb(slice_seq[es_idx], p1, p99, target_size)
-        ed_rgb = normalize_frame_to_rgb(slice_seq[ed_idx], p1, p99, target_size)
+        es_rgb = normalize_frame_to_rgb(slice_seq[es_idx], p1, p99, 0, 0, target_size)
+        ed_rgb = normalize_frame_to_rgb(slice_seq[ed_idx], p1, p99, 0, 0, target_size)
         
         if np.mean(np.abs(ed_rgb - es_rgb)) >= motion_threshold:
             images.append(es_rgb)
