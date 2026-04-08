@@ -544,3 +544,67 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
             print(f"Error processing {subject_id}: {e}")
 
     return _to_array(all_images), _to_array(all_targets), all_labels, all_pids
+
+
+def load_reconstructed_sax_data_rgb(recon_root, ed_es_csv, target_size=(128, 128), motion_threshold=0.01):
+    """
+    Load ED/ES frame pairs from P{nnn}_sax_recon.npy files for the RGB (ED-prediction) pipeline.
+    All subjects are NOR — no pathology filtering needed.
+
+    Parameters
+    ----------
+    recon_root : str   Directory containing P*_sax_recon.npy files.
+    ed_es_csv  : str   Path to segmentation/ed_es_frames.csv
+                       (columns: case_id, ed_frame, es_frame).
+    target_size : tuple  (H, W), default (128, 128).
+    motion_threshold : float  Minimum mean pixel difference to keep a slice (default 0.01).
+
+    Returns
+    -------
+    all_es_images : np.ndarray  shape (N, H, W, 3)  – ES frames (model input)
+    all_ed_images : np.ndarray  shape (N, H, W, 3)  – ED frames (reconstruction target)
+    """
+    df = pd.read_csv(ed_es_csv)
+    ed_es_map = {row['case_id']: (int(row['ed_frame']), int(row['es_frame']))
+                 for _, row in df.iterrows()}
+
+    all_es_images, all_ed_images = [], []
+    npy_files = sorted(
+        f for f in os.listdir(recon_root) if f.endswith('_sax_recon.npy')
+    )
+    print(f"Reconstructed SAX: found {len(npy_files)} .npy files.")
+
+    for fname in npy_files:
+        case_id = fname.replace('_sax_recon.npy', '')
+        if case_id not in ed_es_map:
+            print(f"Skipping {case_id}: not in ED/ES CSV.")
+            continue
+        ed_idx, es_idx = ed_es_map[case_id]
+        if ed_idx == es_idx:
+            print(f"Skipping {case_id}: ED == ES ({ed_idx}).")
+            continue
+
+        cine = np.load(os.path.join(recon_root, fname))   # (T, Z, H, W)
+        if cine.ndim != 4:
+            print(f"Skipping {case_id}: unexpected shape {cine.shape}.")
+            continue
+        T, Z, _, _ = cine.shape
+        if es_idx >= T or ed_idx >= T:
+            print(f"Skipping {case_id}: ED={ed_idx}/ES={es_idx} out of range T={T}.")
+            continue
+
+        print(f"Recon {case_id}  ED={ed_idx}  ES={es_idx}")
+        for z in range(Z):
+            slice_seq = cine[:, z, :, :].astype(np.float32)   # (T, H, W)
+            p1  = np.percentile(slice_seq, 1)
+            p99 = np.percentile(slice_seq, 99)
+
+            es_rgb = normalize_frame_to_rgb(slice_seq[es_idx], p1, p99, 0, 0, target_size)
+            ed_rgb = normalize_frame_to_rgb(slice_seq[ed_idx], p1, p99, 0, 0, target_size)
+
+            if np.mean(np.abs(ed_rgb - es_rgb)) >= motion_threshold:
+                all_es_images.append(es_rgb)
+                all_ed_images.append(ed_rgb)
+
+    print(f"Reconstructed SAX RGB samples: {len(all_es_images)}")
+    return _to_array(all_es_images), _to_array(all_ed_images)

@@ -57,6 +57,7 @@ python run_model.py \
     --mm_dir ../Dataset_1/Training \
     --mm_val_dir ../Dataset_1/Validation \
     --mm_csv ../Dataset_1/211230_M\&Ms_Dataset_information_diagnosis_opendataset.csv \
+    --recon_dir ../reconstructed_sax_images_training_2023 \
     --epochs 100 \
     --start_epoch 0
 
