@@ -545,6 +545,92 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
     return np.array(all_images), np.array(all_flows)
 
 
+def load_reconstructed_sax_data(recon_root, ed_es_csv, target_size=(128, 128)):
+    """
+    Load ED/ES frame pairs from P{nnn}_sax_recon.npy reconstructed cine volumes.
+    All subjects are assumed NOR — no pathology filtering is applied.
+
+    Parameters
+    ----------
+    recon_root : str
+        Directory containing P*_sax_recon.npy files.
+    ed_es_csv  : str
+        Path to the CSV with columns case_id, ed_frame, es_frame
+        (e.g. reconstructed_sax_images_training_2023/segmentation/ed_es_frames.csv).
+    target_size : tuple
+        (H, W) resize target, default (128, 128).
+
+    Returns
+    -------
+    all_images : np.ndarray  shape (N, H, W, 3)  – ES frames (input)
+    all_flows  : np.ndarray  shape (N, H, W, 3)  – optical flow ES→ED
+    """
+    def _preprocess_frame(frame, p1, p99, target_size):
+        frame_cropped = aspect_preserve_resize(
+            frame.astype(np.float32), target_size[0], target_size[1])
+        if (p99 - p1) < 1e-7:
+            return np.zeros((*target_size, 3), dtype=np.float32)
+        frame_norm = np.clip((frame_cropped - p1) / (p99 - p1 + 1e-8), 0.0, 1.0)
+        return np.stack([frame_norm] * 3, axis=-1)
+
+    df = pd.read_csv(ed_es_csv)
+    ed_es_map = {row['case_id']: (int(row['ed_frame']), int(row['es_frame']))
+                 for _, row in df.iterrows()}
+
+    all_images, all_flows = [], []
+    npy_files = sorted(f for f in os.listdir(recon_root) if f.endswith('_sax_recon.npy'))
+    print(f"Reconstructed SAX: found {len(npy_files)} .npy files.")
+
+    for fname in npy_files:
+        case_id = fname.replace('_sax_recon.npy', '')
+        if case_id not in ed_es_map:
+            print(f"Skipping {case_id}: not in ED/ES CSV.")
+            continue
+        ed_idx, es_idx = ed_es_map[case_id]
+        if ed_idx == es_idx:
+            print(f"Skipping {case_id}: ED == ES ({ed_idx}).")
+            continue
+
+        cine = np.load(os.path.join(recon_root, fname))  # (T, Z, H, W)
+        if cine.ndim != 4:
+            print(f"Skipping {case_id}: unexpected shape {cine.shape}.")
+            continue
+        T, Z, _, _ = cine.shape
+        if es_idx >= T or ed_idx >= T:
+            print(f"Skipping {case_id}: ED={ed_idx}/ES={es_idx} out of range T={T}.")
+            continue
+
+        print(f"Recon {case_id}  ED={ed_idx}  ES={es_idx}")
+        for z in range(Z):
+            slice_seq = cine[:, z, :, :].astype(np.float32)  # (T, H, W)
+            p1  = np.percentile(slice_seq, 1)
+            p99 = np.percentile(slice_seq, 99)
+
+            es_rgb = _preprocess_frame(slice_seq[es_idx], p1, p99, target_size)
+            ed_rgb = _preprocess_frame(slice_seq[ed_idx], p1, p99, target_size)
+
+            es_gray = (es_rgb[:, :, 0] * 255).astype(np.uint8)
+            ed_gray = (ed_rgb[:, :, 0] * 255).astype(np.uint8)
+            try:
+                flow = cv2.calcOpticalFlowFarneback(
+                    es_gray, ed_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
+            except Exception as e:
+                print(f"Flow error {case_id} z={z}: {e}")
+                continue
+
+            mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+            if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
+                continue  # static slice, skip
+
+            all_images.append(es_rgb)
+            all_flows.append(np.dstack((flow, mag)))
+
+    print(f"Reconstructed SAX samples: {len(all_images)}")
+    if len(all_images) == 0:
+        return np.array([]), np.array([])
+    return np.array(all_images), np.array(all_flows)
+
+
 # ── ACDC test-set loader with validation / test split ────────────────────────
 #
 # The ACDC *testing* set (database/testing) has 50 patients:

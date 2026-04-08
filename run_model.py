@@ -28,6 +28,7 @@ from data_loader import (
     load_mm_data,
     load_combined_data,
     load_combined_ed_es_data,
+    load_reconstructed_sax_data,
     load_acdc_test_val_ed_es_data,
     load_mm_validation_ed_es_data,
 )
@@ -41,6 +42,10 @@ if __name__ == "__main__":
     parser.add_argument('--mm_csv', type=str, default='../Dataset_1/211230_M&Ms_Dataset_information_diagnosis_opendataset.csv')
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--start_epoch', type=int, default=0, help='Epoch to resume training from')
+    parser.add_argument('--recon_dir', type=str, default=None,
+                        help='Path to reconstructed_sax_images_training_2023/ folder (optional extra NOR training data)')
+    parser.add_argument('--recon_csv', type=str, default=None,
+                        help='Path to ed_es_frames.csv; defaults to <recon_dir>/segmentation/ed_es_frames.csv')
 
     args = parser.parse_args()
 
@@ -58,6 +63,17 @@ if __name__ == "__main__":
         dataset_name = 'COMBINED_NOR'
 
     print(f"Loaded {len(images)} training samples for {args.dataset}.")
+
+    # 1b. Optionally append reconstructed SAX NOR data to training set
+    if args.recon_dir is not None:
+        print("\n=== Loading reconstructed SAX NOR data ===")
+        recon_csv = args.recon_csv or os.path.join(
+            args.recon_dir, 'segmentation', 'ed_es_frames.csv')
+        recon_images, recon_flows = load_reconstructed_sax_data(args.recon_dir, recon_csv)
+        if len(recon_images) > 0:
+            images = np.concatenate([images, recon_images], axis=0)
+            flows  = np.concatenate([flows,  recon_flows],  axis=0)
+            print(f"Total training samples after adding recon: {len(images)}")
 
     # 2. Load the VALIDATION data (ACDC test-split + M&M Validation, all pathologies)
     print("\n=== Loading Validation Data ===")

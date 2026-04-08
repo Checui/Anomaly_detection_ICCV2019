@@ -16,6 +16,7 @@ datasets/
 data/
 wandb/
 
+
 # ==========================================
 # 3. Machine Learning Models (Don't upload heavy trained weights)
 # ==========================================
@@ -30,7 +31,7 @@ training_saver/
 # 4. Python Compiled Files
 # ==========================================
 __pycache__/
-*.
+*.pyc
 
 # ==========================================
 # 6. OS & Editor Files (Keeps it clean for other people)
