@@ -546,7 +546,7 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
     return _to_array(all_images), _to_array(all_targets), all_labels, all_pids
 
 
-def load_reconstructed_sax_data_rgb(recon_root, ed_es_csv, target_size=(128, 128), motion_threshold=0.01):
+def load_reconstructed_sax_data_rgb(recon_root, ed_es_csv, target_size=(128, 128), motion_threshold=0.001):
     """
     Load ED/ES frame pairs from P{nnn}_sax_recon.npy files for the RGB (ED-prediction) pipeline.
     All subjects are NOR — no pathology filtering needed.
