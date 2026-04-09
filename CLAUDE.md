@@ -25,9 +25,16 @@ python run_model.py --dataset MM --mm_dir ../Dataset_1/Training --mm_val_dir ../
 python run_model.py --dataset COMBINED --acdc_dir ../Dataset_2 --mm_dir ../Dataset_1/Training --mm_val_dir ../Dataset_1/Validation --mm_csv ../Dataset_1/211230_M\&Ms_Dataset_information_diagnosis_opendataset.csv --epochs 100
 ```
 
-RGB variant (3-channel input without motion flow):
+RGB variant — predicts ED frame from ES frame (no optical flow; temporal difference used instead):
 ```bash
 python run_model_rgb.py --dataset ACDC --acdc_dir ../Dataset_2 --epochs 50
+```
+
+Append extra NOR training data from reconstructed SAX volumes (both pipelines support `--recon_dir`):
+```bash
+python run_model.py --dataset COMBINED ... --recon_dir ../reconstructed_sax_images_training_2023
+python run_model_rgb.py --dataset COMBINED ... --recon_dir ../reconstructed_sax_images_training_2023
+# --recon_csv defaults to <recon_dir>/segmentation/ed_es_frames.csv
 ```
 
 Resume training from a checkpoint:
@@ -64,8 +71,8 @@ Built on TF v1 graph API. Key components:
 - W&B logging is integrated throughout training (`wandb.log`).
 
 ### Data Loaders
-- **`data_loader.py`**: Loads ACDC (`.nii.gz`) and M&Ms cardiac MRI data. Images are grayscale slices; "flows" are computed as temporal difference between ED and ES frames (replicated across 3 channels). Preprocessing uses `center_crop_or_pad` or `aspect_preserve_resize` to 128×128.
-- **`data_loader_rgb.py`**: RGB variant for 3-channel input.
+- **`data_loader.py`**: Loads ACDC (`.nii.gz`) and M&Ms cardiac MRI data. Grayscale pipeline — images are ES frames (3-channel grayscale), "flows" are Farneback optical flow between ES and ED (shape `H×W×3`: `[flow_x, flow_y, magnitude]`). Static slices filtered by `mean(magnitude) < 0.05 or max(magnitude) < 0.5`. Also contains `load_reconstructed_sax_data()` for the extra NOR `.npy` volumes.
+- **`data_loader_rgb.py`**: RGB pipeline — model input is ES frame, reconstruction target is ED frame; no optical flow computed. Static slices filtered by mean pixel difference `< 0.001`. Also contains `load_reconstructed_sax_data_rgb()`. The recon `.npy` files have very small raw intensity values (`~1e-5`); the threshold is set to 0.001 (not 0.01) to avoid filtering out all recon slices.
 - **`utils.py`**: Loads original video datasets (`.tif` images + precomputed `.npz` optical flow), handles ground truth labels, and computes AUC metrics.
 
 ### Input Format

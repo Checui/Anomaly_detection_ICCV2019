@@ -100,7 +100,7 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
              print(f"Skipping {p}: Shape {img_arr.shape} is not 4D")
              continue
         
-        for z in range(Z):
+        for z in range(1, Z - 1):
             slice_seq = img_arr[:, z, :, :]  # Shape: (T, H, W)
              
             # --- APPLIED FIX: Robust 1st/99th Percentile Normalization ---
@@ -231,7 +231,7 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
             print(f"Skipping {subject_id}: unexpected shape {img_arr.shape}")
             continue
 
-        for z in range(Z):
+        for z in range(1, Z - 1):
             slice_seq = img_arr[:, z, :, :]  # (T, H, W)
 
             # --- APPLIED FIX: Robust 1st/99th Percentile Normalization ---
@@ -433,7 +433,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             continue
 
         print(f"ACDC {p} (NOR)  ED={ed_idx}  ES={es_idx}")
-        for z in range(Z):
+        for z in range(1, Z - 1):
             slice_seq = img_arr[:, z, :, :]  # (T, H, W)
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -503,7 +503,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             continue
 
         print(f"M&M {subject_id} (NOR)  ED={ed_idx}  ES={es_idx}")
-        for z in range(Z):
+        for z in range(1, Z - 1):
             slice_seq = img_arr[:, z, :, :]  # (T, H, W)
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -601,7 +601,7 @@ def load_reconstructed_sax_data(recon_root, ed_es_csv, target_size=(128, 128)):
             continue
 
         print(f"Recon {case_id}  ED={ed_idx}  ES={es_idx}")
-        for z in range(Z):
+        for z in range(1, Z - 1):
             slice_seq = cine[:, z, :, :].astype(np.float32)  # (T, H, W)
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -757,7 +757,7 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
 
         images, flows, labels, pids = [], [], [], []
 
-        for z in range(Z):
+        for z in range(1, Z - 1):
             slice_seq = img_arr[:, z, :, :]  # (T, H, W)
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -903,7 +903,7 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
         T, Z, H, W = img_arr.shape
         print(f"Processing {subject_id} ({pathology})...")
 
-        for z in range(Z):
+        for z in range(1, Z - 1):
             slice_seq = img_arr[:, z, :, :]  # (T, H, W)
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -1082,7 +1082,7 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
         images, flows, labels, pids = [], [], [], []
         print(f"  {p} ({group})  ED={ed_idx}  ES={es_idx}")
 
-        for z in range(Z):
+        for z in range(1, Z - 1):
             slice_seq = img_arr[:, z, :, :]
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -1223,7 +1223,7 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
         print(f"  {subject_id} ({pathology})  ED={ed_idx}  ES={es_idx}")
 
-        for z in range(Z):
+        for z in range(1, Z - 1):
             slice_seq = img_arr[:, z, :, :]
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)

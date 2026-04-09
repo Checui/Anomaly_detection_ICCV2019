@@ -120,8 +120,8 @@ def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128), motion_
     # GET CENTERS FOR ALL Z-SLICES ONCE
     #centers = get_slice_centers_from_mask(mask_arr)
     images, target_frames = [], []
-    
-    for z in range(Z):
+
+    for z in range(1, Z - 1):
         #cy, cx = centers[z] # Unpack the center
         slice_seq = img_arr[:, z, :, :]
         p1, p99 = np.percentile(slice_seq, 1), np.percentile(slice_seq, 99)
@@ -131,7 +131,7 @@ def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128), motion_
         # Use aspect preserve resize
         # Pass 0, 0 for center_y and center_x
         processed = [normalize_frame_to_rgb(slice_seq[t], p1, p99, 0, 0, target_size) for t in range(T)]
-        
+
         for t in range(T - 1):
             f1, f2 = processed[t], processed[t+1]
             if np.mean(np.abs(f2 - f1)) >= motion_threshold:
@@ -151,10 +151,10 @@ def extract_edes_pairs(img_arr,mask_arr, ed_idx, es_idx, target_size=(128, 128),
     # GET CENTERS FOR ALL Z-SLICES ONCE
     # centers = get_slice_centers_from_mask(mask_arr)
     images, target_frames = [], []
-    
-    for z in range(Z):
+
+    for z in range(1, Z - 1):
         # cy, cx = centers[z] # Unpack the center for this specific slice
-        
+
         slice_seq = img_arr[:, z, :, :]
         p1, p99 = np.percentile(slice_seq, 1), np.percentile(slice_seq, 99)
         
@@ -594,7 +594,7 @@ def load_reconstructed_sax_data_rgb(recon_root, ed_es_csv, target_size=(128, 128
             continue
 
         print(f"Recon {case_id}  ED={ed_idx}  ES={es_idx}")
-        for z in range(Z):
+        for z in range(1, Z - 1):
             slice_seq = cine[:, z, :, :].astype(np.float32)   # (T, H, W)
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
