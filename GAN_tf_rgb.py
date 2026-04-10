@@ -26,32 +26,31 @@ import numpy as np
 
 def augment_paired_batch(es_batch, ed_batch, max_rot=15, max_shift=5, scale_var=0.00):
     """
-    Applies identical random rotations, translations, and scaling to paired batches.
+    Applies an identical random 90-degree rotation (0, 90, 180, or 270) to paired batches.
+    max_rot, max_shift, scale_var are reserved for future use (continuous jitter + translation).
     es_batch, ed_batch: numpy arrays of shape (B, H, W, 3)
+    NOTE: Only call this during training, never on validation or test data.
     """
     batch_size, h, w, channels = es_batch.shape
     center = (w // 2, h // 2)
-    
+
     aug_es = np.zeros_like(es_batch)
     aug_ed = np.zeros_like(ed_batch)
-    
+
     for b in range(batch_size):
-        # 1. Generate random parameters for this specific image in the batch
-        angle = np.random.uniform(-max_rot, max_rot)
-        tx = np.random.uniform(-max_shift, max_shift)
-        ty = np.random.uniform(-max_shift, max_shift)
-        scale = np.random.uniform(1.0 - scale_var, 1.0 + scale_var)
-        
-        # 2. Create the affine transformation matrix
-        M = cv2.getRotationMatrix2D(center, angle, scale)
-        M[0, 2] += tx  # Add X translation
-        M[1, 2] += ty  # Add Y translation
-        
-        # 3. Apply the EXACT SAME matrix to both the ES and ED frames
-        # We use BORDER_CONSTANT with value=0 to pad the edges with black
+        angle = np.random.choice([0, 90, 180, 270])
+        # Reserved (not applied yet):
+        # fine_angle = np.random.uniform(-max_rot, max_rot)
+        # angle += fine_angle
+        # tx = np.random.uniform(-max_shift, max_shift)
+        # ty = np.random.uniform(-max_shift, max_shift)
+        # scale = np.random.uniform(1.0 - scale_var, 1.0 + scale_var)
+        M = cv2.getRotationMatrix2D(center, angle, 1.0)
+        # M[0, 2] += tx
+        # M[1, 2] += ty
         aug_es[b] = cv2.warpAffine(es_batch[b], M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
         aug_ed[b] = cv2.warpAffine(ed_batch[b], M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
-        
+
     return aug_es, aug_ed
 
 
@@ -368,31 +367,30 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                 raw_es_batch = training_es_images[batch_idx[j]]
                 raw_ed_batch = training_ed_images[batch_idx[j]]
                 
-                # --- NEW: Apply Paired Augmentation ---
-                # We only do this during training!
-                # aug_es_batch, aug_ed_batch = augment_paired_batch(raw_es_batch, raw_ed_batch)
+                # Apply paired augmentation (training only)
+                aug_es_batch, aug_ed_batch = augment_paired_batch(raw_es_batch, raw_ed_batch)
 
-                # discriminator (Feed the AUGMENTED batches)
+                # discriminator
                 _, curr_D_loss, summary = sess.run([D_optimizer, D_loss, merge],
-                                               feed_dict={plh_es_true: raw_es_batch,
-                                                          plh_ed_true: raw_ed_batch,
+                                               feed_dict={plh_es_true: aug_es_batch,
+                                                          plh_ed_true: aug_ed_batch,
                                                           plh_is_training: True})
                 if j % 50 == 0:
                     _, curr_G_loss, curr_loss_appe, curr_loss_ed, curr_gen_frames, curr_gen_ed, summary = \
                                     sess.run([G_optimizer, G_loss, loss_appe, loss_ed, output_appe[:4], output_ed[:4], merge],
-                                             feed_dict={plh_es_true: training_es_images[batch_idx[j]],
-                                                        plh_ed_true: training_ed_images[batch_idx[j]],
+                                             feed_dict={plh_es_true: aug_es_batch,
+                                                        plh_ed_true: aug_ed_batch,
                                                         plh_is_training: True,
                                                         plh_dropout_prob: p_keep})
-                    scaled_input_samples = (training_es_images[batch_idx[j][:4]] / 0.5) - 1.0
-                    scaled_ed_samples    = (training_ed_images[batch_idx[j][:4]] / 0.5) - 1.0
+                    scaled_input_samples = (aug_es_batch[:4] / 0.5) - 1.0
+                    scaled_ed_samples    = (aug_ed_batch[:4] / 0.5) - 1.0
                     sample_images(dataset_name, scaled_ed_samples, scaled_input_samples,
                                   curr_gen_ed, curr_gen_frames, i, j)
 
                 else:
                     _, curr_G_loss, curr_loss_appe, curr_loss_ed, summary = sess.run([G_optimizer, G_loss, loss_appe, loss_ed, merge],
-                                                                                      feed_dict={plh_es_true: training_es_images[batch_idx[j]],
-                                                                                                 plh_ed_true: training_ed_images[batch_idx[j]],
+                                                                                      feed_dict={plh_es_true: aug_es_batch,
+                                                                                                 plh_ed_true: aug_ed_batch,
                                                                                                  plh_is_training: True,
                                                                                                  plh_dropout_prob: p_keep})
                 # write log for tensorboard
