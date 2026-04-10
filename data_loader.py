@@ -566,8 +566,12 @@ def load_reconstructed_sax_data(recon_root, ed_es_csv, target_size=(128, 128)):
     all_flows  : np.ndarray  shape (N, H, W, 3)  – optical flow ES→ED
     """
     def _preprocess_frame(frame, p1, p99, target_size):
-        frame_cropped = aspect_preserve_resize(
-            frame.astype(np.float32), target_size[0], target_size[1])
+        f = frame.astype(np.float32)
+        h, w = f.shape
+        side = min(h, w)
+        y0, x0 = (h - side) // 2, (w - side) // 2
+        f = f[y0:y0 + side, x0:x0 + side]
+        frame_cropped = aspect_preserve_resize(f, target_size[0], target_size[1])
         if (p99 - p1) < 1e-7:
             return np.zeros((*target_size, 3), dtype=np.float32)
         frame_norm = np.clip((frame_cropped - p1) / (p99 - p1 + 1e-8), 0.0, 1.0)

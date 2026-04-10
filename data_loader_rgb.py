@@ -596,6 +596,11 @@ def load_reconstructed_sax_data_rgb(recon_root, ed_es_csv, target_size=(128, 128
         print(f"Recon {case_id}  ED={ed_idx}  ES={es_idx}")
         for z in range(1, Z - 1):
             slice_seq = cine[:, z, :, :].astype(np.float32)   # (T, H, W)
+            h, w = slice_seq.shape[1], slice_seq.shape[2]
+            side = min(h, w)
+            y0, x0 = (h - side) // 2, (w - side) // 2
+            slice_seq = slice_seq[:, y0:y0 + side, x0:x0 + side]  # center-square crop
+
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
 
