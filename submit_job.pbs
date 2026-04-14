@@ -52,7 +52,9 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 echo "--- Starting Model Training ---"
 
 python run_model.py \
-    --dataset COMBINED \
+    --model_type rgb \
+    --datasets ACDC MM RECON \
+    --frame_mode next_frame \
     --acdc_dir ../Dataset_2 \
     --mm_dir ../Dataset_1/Training \
     --mm_val_dir ../Dataset_1/Validation \

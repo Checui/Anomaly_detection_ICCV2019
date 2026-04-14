@@ -18,68 +18,107 @@ Key dependency: `tensorflow==2.12.0`, used via TF v1 compatibility mode (`tf.com
 
 ## Running the Model
 
-### Training (cardiac MRI)
+`run_model.py` is the unified entry point for cardiac MRI training. Three orthogonal flags control every run:
+
+| Flag | Options | Effect |
+|---|---|---|
+| `--model_type` | `flow` (default) / `rgb` | Which GAN backend: `GAN_tf` (optical flow head) or `GAN_tf_rgb` (ED-frame prediction head) |
+| `--datasets` | `ACDC` `MM` `RECON` (one or more, space-separated) | Training datasets to load; `RECON` requires `--recon_dir` |
+| `--frame_mode` | `ed_es` (default) / `next_frame` | ED/ES pairs only vs all consecutive frame pairs |
+
 ```bash
-python run_model.py --dataset ACDC --acdc_dir ../Dataset_2 --epochs 50
-python run_model.py --dataset MM --mm_dir ../Dataset_1/Training --mm_val_dir ../Dataset_1/Validation --mm_csv ../Dataset_1/211230_M\&Ms_Dataset_information_diagnosis_opendataset.csv --epochs 50
-python run_model.py --dataset COMBINED --acdc_dir ../Dataset_2 --mm_dir ../Dataset_1/Training --mm_val_dir ../Dataset_1/Validation --mm_csv ../Dataset_1/211230_M\&Ms_Dataset_information_diagnosis_opendataset.csv --epochs 100
+# Flow model, ACDC + MM, ED/ES pairs (the main cardiac MRI experiment)
+python run_model.py --model_type flow --datasets ACDC MM --frame_mode ed_es --epochs 100 \
+    --acdc_dir ../Dataset_2 \
+    --mm_dir ../Dataset_1/Training \
+    --mm_val_dir ../Dataset_1/Validation \
+    --mm_csv "../Dataset_1/211230_M&Ms_Dataset_information_diagnosis_opendataset.csv"
+
+# RGB model, all three datasets
+python run_model.py --model_type rgb --datasets ACDC MM RECON --frame_mode ed_es \
+    --recon_dir ../reconstructed_sax_images_training_2023 --epochs 100 ...
+
+# Next-frame training (uses all consecutive pairs, not just ED/ES)
+python run_model.py --model_type flow --datasets ACDC MM --frame_mode next_frame --epochs 100 ...
+
+# Resume from checkpoint epoch N
+python run_model.py ... --start_epoch 30 --epochs 100
 ```
 
-RGB variant — predicts ED frame from ES frame (no optical flow; temporal difference used instead):
-```bash
-python run_model_rgb.py --dataset ACDC --acdc_dir ../Dataset_2 --epochs 50
-```
-
-Append extra NOR training data from reconstructed SAX volumes (both pipelines support `--recon_dir`):
-```bash
-python run_model.py --dataset COMBINED ... --recon_dir ../reconstructed_sax_images_training_2023
-python run_model_rgb.py --dataset COMBINED ... --recon_dir ../reconstructed_sax_images_training_2023
-# --recon_csv defaults to <recon_dir>/segmentation/ed_es_frames.csv
-```
-
-Resume training from a checkpoint:
-```bash
-python run_model.py --dataset COMBINED ... --start_epoch 30
-```
+The checkpoint folder name encodes all three choices, e.g. `ACDC_MM_ED_ES_FLOW_NOR`. `run_model_rgb.py` also exists as a standalone RGB-only script with the same `--datasets` / `--frame_mode` flags.
 
 ### HPC Submission (Imperial College PBS)
 ```bash
 qsub submit_job.pbs
 ```
+Note: `submit_job.pbs` still uses the old `--dataset COMBINED` syntax — update it to use the new flags before submitting.
 
 ### Original Video Anomaly Detection Tasks (main.py)
 ```bash
 python main.py -d UCSDped2 -t 1        # Task 1: prepare data
 python main.py -d UCSDped2 -t 2 -e 40  # Task 2: train
 python main.py -d UCSDped2 -t 3 -c 0   # Task 3: test one clip
-python main.py -d UCSDped2 -t 4        # Task 4: evaluate AUC
+python main.py -d UCSDped2 -t 4        # evaluate AUC
 ```
 Available datasets: `UCSDped2`, `Avenue`, `Belleview`, `Train`, `Exit`, `Entrance`
 
 ### Jupyter Notebook
-`run_model.ipynb` — interactive version of the cardiac MRI training pipeline.
+`run_model.ipynb` — interactive version of the cardiac MRI training pipeline. May use older API.
 
 ## Architecture
 
 ### Core GAN (`GAN_tf.py` / `GAN_tf_rgb.py`)
-Built on TF v1 graph API. Key components:
-- **Generator**: U-Net with shared Inception-style encoder. Has two decoder heads — one for optical flow reconstruction and one for frame reconstruction. Skip connections are used only in the flow decoder.
-- **Discriminator**: PatchGAN-style classifier taking concatenated `[frame, flow]` as input.
-- **Anomaly scoring**: SSIM between real and reconstructed outputs. Lower SSIM = higher anomaly score.
-- Training checkpoints saved to `training_saver/<dataset_name>/`.
-- Sample generated images saved to `generated/<dataset_name>/` each epoch.
-- W&B logging is integrated throughout training (`wandb.log`).
+
+Both files share the same layer primitives (`conv2d`, `conv_transpose`, `conv2d_Inception`) and overall U-Net structure, built on the TF v1 graph API.
+
+**Generator** — shared Inception-style encoder (`h0`–`h5`), then two independent decoder heads:
+- **Auxiliary decoder** (with skip connections): predicts optical flow (`GAN_tf`) or the ED frame from ES (`GAN_tf_rgb`).
+- **Reconstruction decoder** (no skip connections): always reconstructs the input (ES) frame.
+
+**Discriminator** — PatchGAN-style; takes `concat([frame_true, flow_hat], axis=-1)` as input.
+
+**Loss** — `G_loss_total = 0.25×G_adv + loss_appe + 2×loss_aux`
+- `loss_appe`: MSE + gradient loss between reconstructed and input frame.
+- `loss_aux`: L1 loss between predicted auxiliary output and ground truth (flow or ED frame).
+
+**Anomaly scoring at validation** — per-sample `loss_appe` and `loss_aux` are computed independently; AUROC is logged for each and for the combined score `loss_appe + 2×loss_aux`. Higher loss = more anomalous.
+
+**`GAN_tf_rgb.py` differences:**
+- `augment_paired_batch()` applies random 90° rotations to (ES, ED) pairs during training.
+- Auxiliary target is `scaled_ed` (ED frame in `[-1, 1]`); the discriminator sees `[es_frame, pred_ed]`.
+- `loss_aux` is named `loss_ed`.
 
 ### Data Loaders
-- **`data_loader.py`**: Loads ACDC (`.nii.gz`) and M&Ms cardiac MRI data. Grayscale pipeline — images are ES frames (3-channel grayscale), "flows" are Farneback optical flow between ES and ED (shape `H×W×3`: `[flow_x, flow_y, magnitude]`). Static slices filtered by `mean(magnitude) < 0.05 or max(magnitude) < 0.5`. Also contains `load_reconstructed_sax_data()` for the extra NOR `.npy` volumes.
-- **`data_loader_rgb.py`**: RGB pipeline — model input is ES frame, reconstruction target is ED frame; no optical flow computed. Static slices filtered by mean pixel difference `< 0.001`. Also contains `load_reconstructed_sax_data_rgb()`. The recon `.npy` files have very small raw intensity values (`~1e-5`); the threshold is set to 0.001 (not 0.01) to avoid filtering out all recon slices.
-- **`utils.py`**: Loads original video datasets (`.tif` images + precomputed `.npz` optical flow), handles ground truth labels, and computes AUC metrics.
 
-### Input Format
-All data is normalized to `[-1, 1]` range before feeding to the GAN. The model always uses 3-channel inputs (grayscale images are extended to 3 channels). Default spatial resolution: 128×128 (cardiac), 128×192 (video surveillance).
+`run_model.py` imports both loaders as `dl_flow` / `dl_rgb`; they are never mixed within a single run.
+
+**`data_loader.py`** — grayscale pipeline, returns `(images, flows)`:
+
+| Function | Description |
+|---|---|
+| `load_acdc_data` | ACDC NOR training, all consecutive frame pairs |
+| `load_mm_data` | M&M NOR training, all consecutive frame pairs |
+| `load_combined_data` | ACDC + M&M, consecutive pairs |
+| `load_acdc_ed_es_data` | ACDC NOR training, ED/ES pairs only |
+| `load_mm_ed_es_data` | M&M NOR training, ED/ES pairs only |
+| `load_combined_ed_es_data` | ACDC + M&M combined, ED/ES pairs only |
+| `load_reconstructed_sax_data` | RECON `.npy` volumes, ED/ES pairs |
+| `load_reconstructed_sax_data_next_frame` | RECON `.npy` volumes, consecutive pairs |
+| `load_acdc_test_val_ed_es_data` | ACDC test set split into val/test, ED/ES only (fixed seed=42) |
+| `load_mm_validation_ed_es_data` | M&M Validation folder, all pathologies, ED/ES only |
+
+**`data_loader_rgb.py`** — RGB pipeline, returns `(es_images, ed_images)`. Mirrors the above with the same function names plus `load_reconstructed_sax_data_rgb` / `load_reconstructed_sax_data_next_frame_rgb`. Core helpers: `extract_consecutive_pairs` and `extract_edes_pairs` do the actual frame extraction; the dataset-level functions call these.
+
+**Preprocessing (both pipelines):**
+- Frames normalised to `[0, 1]` via 1st/99th percentile clipping, then converted to 3-channel.
+- Resized with `aspect_preserve_resize` (letterbox to 128×128).
+- Static slices discarded: `mean(flow_mag) < 0.05` or `max(flow_mag) < 0.5` (flow pipeline); `mean(|f2 - f1|) < 0.01` (RGB pipeline); threshold is `0.001` for RECON volumes (raw intensities ~1e-5).
+- The GAN receives frames in `[-1, 1]` — scaling is applied inside the TF graph (`(x / 0.5) − 1`), not in the loaders.
+
+**Validation split (ACDC test set, fixed seed 42):** 4 NOR + 2 per disease (MINF, DCM, HCM, RV) = 12 patients for validation; remaining 38 for test.
 
 ### Dataset Paths
-Datasets are expected one directory level up (`../Dataset_1`, `../Dataset_2`). Video surveillance datasets go in `../dataset/`.
+Datasets are expected one directory level up (`../Dataset_1`, `../Dataset_2`). Reconstructed SAX volumes are at the workspace root (`../reconstructed_sax_images_training_2023/`). Video surveillance datasets go in `../dataset/`.
 
 ### TF v1 Compatibility Note
-`run_model.py` and `run_model_rgb.py` mock the `ProgressBar` module and redirect `tensorflow` to `tensorflow.compat.v1`. Any new code in these scripts must remain compatible with TF v1 graph-mode semantics.
+`run_model.py` and `run_model_rgb.py` mock the `ProgressBar` module and redirect `tensorflow` to `tensorflow.compat.v1`. Any new code in these scripts must remain compatible with TF v1 graph-mode semantics. Always call `tf.compat.v1.reset_default_graph()` before building a new graph.

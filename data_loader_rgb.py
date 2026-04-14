@@ -613,3 +613,115 @@ def load_reconstructed_sax_data_rgb(recon_root, ed_es_csv, target_size=(128, 128
 
     print(f"Reconstructed SAX RGB samples: {len(all_es_images)}")
     return _to_array(all_es_images), _to_array(all_ed_images)
+
+
+# ── Standalone per-dataset ED/ES training loaders (RGB) ─────────────────────
+
+def load_acdc_ed_es_data(acdc_dir, target_size=(128, 128)):
+    """Load only ED/ES frame pairs from ACDC NOR training subjects (RGB pipeline)."""
+    training_dir = os.path.join(acdc_dir, 'database', 'training')
+    if not os.path.isdir(training_dir):
+        training_dir = os.path.join(acdc_dir, 'database', 'training_test')
+
+    patients = sorted([d for d in os.listdir(training_dir)
+                       if os.path.isdir(os.path.join(training_dir, d))])
+    all_images, all_targets = [], []
+
+    for p in patients:
+        p_dir = os.path.join(training_dir, p)
+        info  = read_acdc_info(os.path.join(p_dir, 'Info.cfg'))
+        if info.get('Group', '') != 'NOR' or 'ED' not in info or 'ES' not in info:
+            continue
+        nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
+        if not os.path.exists(nii_path):
+            continue
+        try:
+            img_arr = load_and_orient_sitk(nii_path)
+            imgs, targets = extract_edes_pairs(
+                img_arr, 0, int(info['ED']), int(info['ES']), target_size)
+            all_images.extend(imgs)
+            all_targets.extend(targets)
+        except Exception as e:
+            print(f"Error processing ACDC {p}: {e}")
+
+    print(f"ACDC NOR ED/ES samples: {len(all_images)}")
+    return _to_array(all_images), _to_array(all_targets)
+
+
+def load_mm_ed_es_data(mm_training_dir, csv_path, target_size=(128, 128)):
+    """Load only ED/ES frame pairs from M&M NOR training subjects (RGB pipeline)."""
+    df = pd.read_csv(csv_path)
+    nor_rows = df[df['Pathology'] == 'NOR'][['External code', 'ED', 'ES']]
+    nor_info = {row['External code']: (int(row['ED']), int(row['ES']))
+                for _, row in nor_rows.iterrows()}
+    print(f"M&M: found {len(nor_info)} NOR subjects in CSV.")
+
+    all_images, all_targets = [], []
+    sa_files = sorted([f for f in os.listdir(mm_training_dir)
+                       if f.endswith('_sa.nii.gz') and not f.endswith('_gt.nii.gz')])
+
+    for fname in sa_files:
+        subject_id = fname.replace('_sa.nii.gz', '')
+        if subject_id not in nor_info:
+            continue
+        nii_path = os.path.join(mm_training_dir, fname)
+        if not os.path.exists(nii_path):
+            continue
+        try:
+            ed_idx, es_idx = nor_info[subject_id]
+            img_arr = load_and_orient_sitk(nii_path)
+            imgs, targets = extract_edes_pairs(img_arr, 0, ed_idx, es_idx, target_size)
+            all_images.extend(imgs)
+            all_targets.extend(targets)
+        except Exception as e:
+            print(f"Error processing M&M {subject_id}: {e}")
+
+    print(f"M&M NOR ED/ES samples: {len(all_images)}")
+    return _to_array(all_images), _to_array(all_targets)
+
+
+# ── Reconstructed SAX next-frame loader (RGB) ────────────────────────────────
+
+def load_reconstructed_sax_data_next_frame_rgb(recon_root, target_size=(128, 128),
+                                                motion_threshold=0.001):
+    """Load all consecutive frame pairs from reconstructed SAX volumes (RGB pipeline).
+
+    Unlike load_reconstructed_sax_data_rgb (ED/ES only), this iterates every
+    adjacent pair t → t+1.  No ED/ES CSV is required.
+
+    Parameters
+    ----------
+    recon_root       : str    Directory containing *_sax_recon.npy files.
+    target_size      : tuple  (H, W) resize target, default (128, 128).
+    motion_threshold : float  Minimum mean pixel difference to keep a pair.
+
+    Returns
+    -------
+    all_images  : np.ndarray  shape (N, H, W, 3)  – frame t   (model input)
+    all_targets : np.ndarray  shape (N, H, W, 3)  – frame t+1 (reconstruction target)
+    """
+    all_images, all_targets = [], []
+    npy_files = sorted(f for f in os.listdir(recon_root) if f.endswith('_sax_recon.npy'))
+    print(f"Reconstructed SAX (next-frame): found {len(npy_files)} .npy files.")
+
+    for fname in npy_files:
+        case_id = fname.replace('_sax_recon.npy', '')
+        cine = np.load(os.path.join(recon_root, fname))  # (T, Z, H, W)
+        if cine.ndim != 4:
+            print(f"Skipping {case_id}: unexpected shape {cine.shape}.")
+            continue
+        T, Z, h, w = cine.shape
+
+        # Centre-square crop to match the ED/ES loader behaviour
+        side = min(h, w)
+        y0, x0 = (h - side) // 2, (w - side) // 2
+        cine_cropped = cine[:, :, y0:y0 + side, x0:x0 + side].astype(np.float32)
+
+        print(f"Recon {case_id}  T={T}  Z={Z}")
+        imgs, targets = extract_consecutive_pairs(
+            cine_cropped, 0, target_size, motion_threshold)
+        all_images.extend(imgs)
+        all_targets.extend(targets)
+
+    print(f"Reconstructed SAX (next-frame) RGB samples: {len(all_images)}")
+    return _to_array(all_images), _to_array(all_targets)

@@ -20,111 +20,196 @@ import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior()
 sys.modules['tensorflow'] = tf
 
-# Import your local modules
 import GAN_tf
+import GAN_tf_rgb
 import numpy as np
-from data_loader import (
-    load_acdc_data,
-    load_mm_data,
-    load_combined_data,
-    load_combined_ed_es_data,
-    load_reconstructed_sax_data,
-    load_acdc_test_val_ed_es_data,
-    load_mm_validation_ed_es_data,
-)
+import data_loader     as dl_flow   # returns (images, flows)
+import data_loader_rgb as dl_rgb    # returns (es_images, ed_images)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, required=True, choices=['ACDC', 'MM', 'COMBINED'])
-    parser.add_argument('--acdc_dir', type=str, default='../Dataset_2')
-    parser.add_argument('--mm_dir', type=str, default='../Dataset_1/Training')
-    parser.add_argument('--mm_val_dir', type=str, default='../Dataset_1/Validation')
-    parser.add_argument('--mm_csv', type=str, default='../Dataset_1/211230_M&Ms_Dataset_information_diagnosis_opendataset.csv')
-    parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--start_epoch', type=int, default=0, help='Epoch to resume training from')
-    parser.add_argument('--recon_dir', type=str, default=None,
-                        help='Path to reconstructed_sax_images_training_2023/ folder (optional extra NOR training data)')
-    parser.add_argument('--recon_csv', type=str, default=None,
-                        help='Path to ed_es_frames.csv; defaults to <recon_dir>/segmentation/ed_es_frames.csv')
+
+    # ── Model type ────────────────────────────────────────────────────────────
+    parser.add_argument(
+        '--model_type', type=str, default='flow',
+        choices=['flow', 'rgb'],
+        help=(
+            '"flow" (default): second decoder head predicts optical flow '
+            '(GAN_tf); first decoder always reconstructs the input frame. '
+            '"rgb": second decoder head predicts the ED frame from the ES '
+            'frame instead of optical flow (GAN_tf_rgb).'
+        )
+    )
+
+    # ── Dataset / frame mode ──────────────────────────────────────────────────
+    parser.add_argument(
+        '--datasets', type=str, nargs='+', required=True,
+        choices=['ACDC', 'MM', 'RECON'],
+        help='Training datasets to load (space-separated). Choices: ACDC MM RECON.'
+    )
+    parser.add_argument(
+        '--frame_mode', type=str, default='ed_es',
+        choices=['ed_es', 'next_frame'],
+        help=(
+            '"ed_es" (default): use only End-Diastole/End-Systole frame pairs. '
+            '"next_frame": use all consecutive frame pairs.'
+        )
+    )
+
+    # ── Paths ─────────────────────────────────────────────────────────────────
+    parser.add_argument('--acdc_dir',    type=str, default='../Dataset_2')
+    parser.add_argument('--mm_dir',      type=str, default='../Dataset_1/Training')
+    parser.add_argument('--mm_val_dir',  type=str, default='../Dataset_1/Validation')
+    parser.add_argument('--mm_csv',      type=str,
+                        default='../Dataset_1/211230_M&Ms_Dataset_information_diagnosis_opendataset.csv')
+    parser.add_argument('--recon_dir',   type=str, default=None,
+                        help='Path to reconstructed_sax_images_training_2023/. '
+                             'Required when RECON is in --datasets.')
+    parser.add_argument('--recon_csv',   type=str, default=None,
+                        help='Path to ed_es_frames.csv (only used for RECON + ed_es). '
+                             'Defaults to <recon_dir>/segmentation/ed_es_frames.csv.')
+
+    # ── Training ──────────────────────────────────────────────────────────────
+    parser.add_argument('--epochs',      type=int, default=50)
+    parser.add_argument('--start_epoch', type=int, default=0,
+                        help='Epoch to resume training from.')
 
     args = parser.parse_args()
 
-    # 1. Load the TRAINING data based on the argument
-    if args.dataset == 'ACDC':
-        images, flows = load_acdc_data(args.acdc_dir)
-        dataset_name = 'ACDC_NOR'
-        
-    elif args.dataset == 'MM':
-        images, flows = load_mm_data(args.mm_dir, args.mm_csv)
-        dataset_name = 'MM_NOR'
-        
-    elif args.dataset == 'COMBINED':
-        images, flows = load_combined_ed_es_data(args.acdc_dir, args.mm_dir, args.mm_csv)
-        dataset_name = 'COMBINED_NOR'
+    if 'RECON' in args.datasets and args.recon_dir is None:
+        parser.error('--recon_dir is required when RECON is in --datasets')
 
-    print(f"Loaded {len(images)} training samples for {args.dataset}.")
+    # ------------------------------------------------------------------
+    # 1. Build per-dataset loader dispatch tables
+    # ------------------------------------------------------------------
+    # Both tables return (part1, part2) where:
+    #   flow mode  → part1 = images (ES frames),  part2 = flows
+    #   rgb  mode  → part1 = es_images,            part2 = ed_images
 
-    # 1b. Optionally append reconstructed SAX NOR data to training set
-    if args.recon_dir is not None:
-        print("\n=== Loading reconstructed SAX NOR data ===")
-        recon_csv = args.recon_csv or os.path.join(
+    def _recon_flow_ed_es():
+        csv = args.recon_csv or os.path.join(
             args.recon_dir, 'segmentation', 'ed_es_frames.csv')
-        recon_images, recon_flows = load_reconstructed_sax_data(args.recon_dir, recon_csv)
-        if len(recon_images) > 0:
-            images = np.concatenate([images, recon_images], axis=0)
-            flows  = np.concatenate([flows,  recon_flows],  axis=0)
-            print(f"Total training samples after adding recon: {len(images)}")
+        return dl_flow.load_reconstructed_sax_data(args.recon_dir, csv)
 
-    # 2. Load the VALIDATION data (ACDC test-split + M&M Validation, all pathologies)
-    print("\n=== Loading Validation Data ===")
+    def _recon_rgb_ed_es():
+        csv = args.recon_csv or os.path.join(
+            args.recon_dir, 'segmentation', 'ed_es_frames.csv')
+        return dl_rgb.load_reconstructed_sax_data_rgb(args.recon_dir, csv)
 
-    # ACDC validation split (4 NOR + 2 per disease = 12 patients, ED/ES only)
-    (acdc_val_images, acdc_val_flows, acdc_val_labels, acdc_val_pids,
-     _, _, _, _) = load_acdc_test_val_ed_es_data(args.acdc_dir)
-    print(f"ACDC validation (ED/ES): {len(acdc_val_images)} samples")
+    _flow_loaders = {
+        ('ACDC',  'ed_es'):      lambda: dl_flow.load_acdc_ed_es_data(args.acdc_dir),
+        ('ACDC',  'next_frame'): lambda: dl_flow.load_acdc_data(args.acdc_dir),
+        ('MM',    'ed_es'):      lambda: dl_flow.load_mm_ed_es_data(args.mm_dir, args.mm_csv),
+        ('MM',    'next_frame'): lambda: dl_flow.load_mm_data(args.mm_dir, args.mm_csv),
+        ('RECON', 'ed_es'):      _recon_flow_ed_es,
+        ('RECON', 'next_frame'): lambda: dl_flow.load_reconstructed_sax_data_next_frame(args.recon_dir),
+    }
 
-    # M&M validation (all pathologies, ED/ES only)
-    mm_val_images, mm_val_flows, mm_val_labels, mm_val_pids = load_mm_validation_ed_es_data(
-        args.mm_val_dir, args.mm_csv
-    )
-    print(f"M&M validation (ED/ES):  {len(mm_val_images)} samples")
+    _rgb_loaders = {
+        ('ACDC',  'ed_es'):      lambda: dl_rgb.load_acdc_ed_es_data(args.acdc_dir),
+        ('ACDC',  'next_frame'): lambda: dl_rgb.load_acdc_data(args.acdc_dir),
+        ('MM',    'ed_es'):      lambda: dl_rgb.load_mm_ed_es_data(args.mm_dir, args.mm_csv),
+        ('MM',    'next_frame'): lambda: dl_rgb.load_mm_data(args.mm_dir, args.mm_csv),
+        ('RECON', 'ed_es'):      _recon_rgb_ed_es,
+        ('RECON', 'next_frame'): lambda: dl_rgb.load_reconstructed_sax_data_next_frame_rgb(args.recon_dir),
+    }
 
-    # Combine validation sets
-    if len(acdc_val_images) > 0 and len(mm_val_images) > 0:
-        val_images = np.concatenate([acdc_val_images, mm_val_images], axis=0)
-        val_flows  = np.concatenate([acdc_val_flows,  mm_val_flows],  axis=0)
-        val_labels = acdc_val_labels + mm_val_labels
-    elif len(acdc_val_images) > 0:
-        val_images, val_flows, val_labels = acdc_val_images, acdc_val_flows, acdc_val_labels
-    elif len(mm_val_images) > 0:
-        val_images, val_flows, val_labels = mm_val_images, mm_val_flows, mm_val_labels
+    loaders = _flow_loaders if args.model_type == 'flow' else _rgb_loaders
+
+    # ------------------------------------------------------------------
+    # 2. Load TRAINING data
+    # ------------------------------------------------------------------
+    part1_list, part2_list = [], []
+
+    for ds in args.datasets:
+        print(f"\n=== Loading {ds} [{args.frame_mode}] ({args.model_type} mode) ===")
+        p1, p2 = loaders[(ds, args.frame_mode)]()
+        print(f"{ds}: {len(p1)} samples loaded.")
+        if len(p1) > 0:
+            part1_list.append(p1)
+            part2_list.append(p2)
+
+    if not part1_list:
+        print("No data loaded. Check paths and dataset flags.")
+        sys.exit(1)
+
+    train_part1 = np.concatenate(part1_list, axis=0)
+    train_part2 = np.concatenate(part2_list, axis=0)
+
+    dataset_name = '_'.join(args.datasets) + '_' + args.frame_mode.upper() + '_' + args.model_type.upper() + '_NOR'
+    print(f"\nTotal training samples: {len(train_part1)}")
+    print(f"Dataset name: {dataset_name}")
+
+    # ------------------------------------------------------------------
+    # 3. Load VALIDATION data (always ED/ES regardless of frame_mode)
+    # ------------------------------------------------------------------
+    print("\n=== Loading Validation Data (ED/ES) ===")
+
+    if args.model_type == 'flow':
+        _val_acdc = dl_flow.load_acdc_test_val_ed_es_data
+        _val_mm   = dl_flow.load_mm_validation_ed_es_data
     else:
-        val_images, val_flows, val_labels = None, None, None
+        _val_acdc = dl_rgb.load_acdc_test_val_ed_es_data
+        _val_mm   = dl_rgb.load_mm_validation_ed_es_data
 
-    if val_images is not None:
+    (acdc_val_p1, acdc_val_p2, acdc_val_labels, acdc_val_pids,
+     _, _, _, _) = _val_acdc(args.acdc_dir)
+    print(f"ACDC validation (ED/ES): {len(acdc_val_p1)} samples")
+
+    mm_val_p1, mm_val_p2, mm_val_labels, mm_val_pids = _val_mm(
+        args.mm_val_dir, args.mm_csv)
+    print(f"M&M validation (ED/ES):  {len(mm_val_p1)} samples")
+
+    if len(acdc_val_p1) > 0 and len(mm_val_p1) > 0:
+        val_p1     = np.concatenate([acdc_val_p1, mm_val_p1], axis=0)
+        val_p2     = np.concatenate([acdc_val_p2, mm_val_p2], axis=0)
+        val_labels = acdc_val_labels + mm_val_labels
+    elif len(acdc_val_p1) > 0:
+        val_p1, val_p2, val_labels = acdc_val_p1, acdc_val_p2, acdc_val_labels
+    elif len(mm_val_p1) > 0:
+        val_p1, val_p2, val_labels = mm_val_p1, mm_val_p2, mm_val_labels
+    else:
+        val_p1, val_p2, val_labels = None, None, None
+
+    if val_p1 is not None:
         from collections import Counter
         lbl_counts = Counter(val_labels)
-        print(f"Combined validation: {len(val_images)} samples")
-        print(f"  Healthy (NOR): {lbl_counts.get('NOR', 0)}, Unhealthy: {sum(v for k,v in lbl_counts.items() if k != 'NOR')}")
+        print(f"Combined validation: {len(val_p1)} samples")
+        print(f"  Healthy (NOR): {lbl_counts.get('NOR', 0)}, "
+              f"Unhealthy: {sum(v for k, v in lbl_counts.items() if k != 'NOR')}")
     else:
         print("WARNING: No validation data loaded!")
 
-    # 3. Train the model
-    if len(images) > 0:
-        tf.compat.v1.reset_default_graph() 
-        
-        print(f"\nStarting Training for {args.dataset}...")
+    # ------------------------------------------------------------------
+    # 4. Train
+    # ------------------------------------------------------------------
+    tf.compat.v1.reset_default_graph()
+
+    print(f"\nStarting Training: {dataset_name} ...")
+
+    if args.model_type == 'flow':
         GAN_tf.train_Unet_naive_with_batch_norm(
-            training_images=images,
-            training_flows=flows,
+            training_images=train_part1,
+            training_flows=train_part2,
             max_epoch=args.epochs,
             dataset_name=dataset_name,
             start_model_idx=args.start_epoch,
             batch_size=16,
-            val_images=val_images,
-            val_flows=val_flows,
+            val_images=val_p1,
+            val_flows=val_p2,
             val_labels=val_labels
         )
-        print(f"Training complete for {args.dataset}.")
     else:
-        print("No data loaded. Check paths.")
+        GAN_tf_rgb.train_Unet_naive_with_batch_norm(
+            training_es_images=train_part1,
+            training_ed_images=train_part2,
+            max_epoch=args.epochs,
+            dataset_name=dataset_name,
+            start_model_idx=args.start_epoch,
+            batch_size=16,
+            val_es_images=val_p1,
+            val_ed_images=val_p2,
+            val_labels=val_labels
+        )
+
+    print(f"Training complete: {dataset_name}.")
