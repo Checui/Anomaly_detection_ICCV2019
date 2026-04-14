@@ -155,16 +155,10 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
                     print(f"Flow failed: {e}")
                     continue
 
-                # Add Magnitude channel
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-
-                # --- NEW: Check for dead/static slices ---
-                # If the maximum pixel displacement is tiny, or the average displacement 
-                # is virtually zero, skip this slice because the heart isn't beating here.
-                if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
-                    # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+                frame_diff = np.mean(np.abs(next_gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0
+                if frame_diff < 0.01:
                     continue
-                # -----------------------------------------
 
                 flow_3ch = np.dstack((flow, mag)) # (H, W, 3)
                 
@@ -276,14 +270,9 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
                     continue
 
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-
-                # --- NEW: Check for dead/static slices ---
-                # If the maximum pixel displacement is tiny, or the average displacement 
-                # is virtually zero, skip this slice because the heart isn't beating here.
-                if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
-                    # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+                frame_diff = np.mean(np.abs(next_gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0
+                if frame_diff < 0.01:
                     continue
-                # -----------------------------------------
 
                 flow_3ch = np.dstack((flow, mag))  # (H, W, 3)
 
@@ -453,13 +442,9 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
             
-            # --- NEW: Check for dead/static slices ---
-            # If the maximum pixel displacement is tiny, or the average displacement 
-            # is virtually zero, skip this slice because the heart isn't beating here.
-            if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
-                # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+            frame_diff = np.mean(np.abs(ed_gray.astype(np.float32) - es_gray.astype(np.float32))) / 255.0
+            if frame_diff < 0.01:
                 continue
-            # -----------------------------------------
 
             flow_3ch = np.dstack((flow, mag))  # (H, W, 3)
 
@@ -523,13 +508,9 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
             
-            # --- NEW: Check for dead/static slices ---
-            # If the maximum pixel displacement is tiny, or the average displacement 
-            # is virtually zero, skip this slice because the heart isn't beating here.
-            if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
-                # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+            frame_diff = np.mean(np.abs(ed_gray.astype(np.float32) - es_gray.astype(np.float32))) / 255.0
+            if frame_diff < 0.01:
                 continue
-            # -----------------------------------------
 
             flow_3ch = np.dstack((flow, mag))
 
@@ -623,8 +604,9 @@ def load_reconstructed_sax_data(recon_root, ed_es_csv, target_size=(128, 128)):
                 continue
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-            if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
-                continue  # static slice, skip
+            frame_diff = np.mean(np.abs(ed_gray.astype(np.float32) - es_gray.astype(np.float32))) / 255.0
+            if frame_diff < 0.001:
+                continue
 
             all_images.append(es_rgb)
             all_flows.append(np.dstack((flow, mag)))
@@ -800,13 +782,9 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
 
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
                 
-                # --- NEW: Check for dead/static slices ---
-                # If the maximum pixel displacement is tiny, or the average displacement 
-                # is virtually zero, skip this slice because the heart isn't beating here.
-                if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
-                    # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+                frame_diff = np.mean(np.abs(next_gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0
+                if frame_diff < 0.01:
                     continue
-                # -----------------------------------------
 
                 flow_3ch = np.dstack((flow, mag))
 
@@ -946,13 +924,9 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
                 
-                # --- NEW: Check for dead/static slices ---
-                # If the maximum pixel displacement is tiny, or the average displacement 
-                # is virtually zero, skip this slice because the heart isn't beating here.
-                if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
-                    # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+                frame_diff = np.mean(np.abs(next_gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0
+                if frame_diff < 0.01:
                     continue
-                # -----------------------------------------
 
                 flow_3ch = np.dstack((flow, mag))
 
@@ -1106,13 +1080,9 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
             
-            # --- NEW: Check for dead/static slices ---
-            # If the maximum pixel displacement is tiny, or the average displacement 
-            # is virtually zero, skip this slice because the heart isn't beating here.
-            if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
-                # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+            frame_diff = np.mean(np.abs(ed_gray.astype(np.float32) - es_gray.astype(np.float32))) / 255.0
+            if frame_diff < 0.01:
                 continue
-            # -----------------------------------------
 
             flow_3ch = np.dstack((flow, mag))
 
@@ -1247,13 +1217,9 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
             
-            # --- NEW: Check for dead/static slices ---
-            # If the maximum pixel displacement is tiny, or the average displacement 
-            # is virtually zero, skip this slice because the heart isn't beating here.
-            if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
-                # print(f"Skipping static slice z={z} (Mean Flow: {np.mean(mag):.3f})")
+            frame_diff = np.mean(np.abs(ed_gray.astype(np.float32) - es_gray.astype(np.float32))) / 255.0
+            if frame_diff < 0.01:
                 continue
-            # -----------------------------------------
 
             flow_3ch = np.dstack((flow, mag))
 
@@ -1367,7 +1333,8 @@ def load_acdc_ed_es_data(acdc_dir, target_size=(128, 128)):
                 continue
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-            if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
+            frame_diff = np.mean(np.abs(ed_gray.astype(np.float32) - es_gray.astype(np.float32))) / 255.0
+            if frame_diff < 0.01:
                 continue
 
             all_images.append(es_rgb)
@@ -1442,7 +1409,8 @@ def load_mm_ed_es_data(mm_training_dir, csv_path, target_size=(128, 128)):
                 continue
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-            if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
+            frame_diff = np.mean(np.abs(ed_gray.astype(np.float32) - es_gray.astype(np.float32))) / 255.0
+            if frame_diff < 0.01:
                 continue
 
             all_images.append(es_rgb)
@@ -1525,7 +1493,8 @@ def load_reconstructed_sax_data_next_frame(recon_root, target_size=(128, 128)):
                     continue
 
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-                if np.mean(mag) < 0.05 or np.max(mag) < 0.5:
+                frame_diff = np.mean(np.abs(next_gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0
+                if frame_diff < 0.001:
                     continue
 
                 all_images.append(processed_frames[t])
