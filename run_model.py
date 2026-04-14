@@ -141,24 +141,33 @@ if __name__ == "__main__":
     print(f"Dataset name: {dataset_name}")
 
     # ------------------------------------------------------------------
-    # 3. Load VALIDATION data (always ED/ES regardless of frame_mode)
+    # 3. Load VALIDATION data (matches frame_mode: ed_es or next_frame)
     # ------------------------------------------------------------------
-    print("\n=== Loading Validation Data (ED/ES) ===")
+    val_mode_label = 'next_frame' if args.frame_mode == 'next_frame' else 'ED/ES'
+    print(f"\n=== Loading Validation Data ({val_mode_label}) ===")
 
-    if args.model_type == 'flow':
-        _val_acdc = dl_flow.load_acdc_test_val_ed_es_data
-        _val_mm   = dl_flow.load_mm_validation_ed_es_data
+    if args.frame_mode == 'next_frame':
+        if args.model_type == 'flow':
+            _val_acdc = dl_flow.load_acdc_test_val_data
+            _val_mm   = dl_flow.load_mm_validation_data
+        else:
+            _val_acdc = dl_rgb.load_acdc_test_val_data
+            _val_mm   = dl_rgb.load_mm_validation_data
     else:
-        _val_acdc = dl_rgb.load_acdc_test_val_ed_es_data
-        _val_mm   = dl_rgb.load_mm_validation_ed_es_data
+        if args.model_type == 'flow':
+            _val_acdc = dl_flow.load_acdc_test_val_ed_es_data
+            _val_mm   = dl_flow.load_mm_validation_ed_es_data
+        else:
+            _val_acdc = dl_rgb.load_acdc_test_val_ed_es_data
+            _val_mm   = dl_rgb.load_mm_validation_ed_es_data
 
     (acdc_val_p1, acdc_val_p2, acdc_val_labels, acdc_val_pids,
      _, _, _, _) = _val_acdc(args.acdc_dir)
-    print(f"ACDC validation (ED/ES): {len(acdc_val_p1)} samples")
+    print(f"ACDC validation ({val_mode_label}): {len(acdc_val_p1)} samples")
 
     mm_val_p1, mm_val_p2, mm_val_labels, mm_val_pids = _val_mm(
         args.mm_val_dir, args.mm_csv)
-    print(f"M&M validation (ED/ES):  {len(mm_val_p1)} samples")
+    print(f"M&M validation ({val_mode_label}):  {len(mm_val_p1)} samples")
 
     if len(acdc_val_p1) > 0 and len(mm_val_p1) > 0:
         val_p1     = np.concatenate([acdc_val_p1, mm_val_p1], axis=0)
