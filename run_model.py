@@ -73,6 +73,9 @@ if __name__ == "__main__":
     parser.add_argument('--epochs',      type=int, default=50)
     parser.add_argument('--start_epoch', type=int, default=0,
                         help='Epoch to resume training from.')
+    parser.add_argument('--run_tag',     type=str, default=None,
+                        help='Optional suffix appended to the checkpoint folder name '
+                             'to distinguish re-runs (e.g. --run_tag v2).')
 
     args = parser.parse_args()
 
@@ -137,6 +140,8 @@ if __name__ == "__main__":
     train_part2 = np.concatenate(part2_list, axis=0)
 
     dataset_name = '_'.join(args.datasets) + '_' + args.frame_mode.upper() + '_' + args.model_type.upper() + '_NOR'
+    if args.run_tag:
+        dataset_name = dataset_name + '_' + args.run_tag
     print(f"\nTotal training samples: {len(train_part1)}")
     print(f"Dataset name: {dataset_name}")
 
