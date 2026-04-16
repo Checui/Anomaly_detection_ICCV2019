@@ -49,12 +49,12 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 # Run your Python training script
 # Note: Ensure the paths (--acdc_dir, --mm_dir, --mm_csv) perfectly match where 
 # you placed them in your ephemeral storage relative to this script.
-echo "--- Starting Model Training: RGB, next-frame pairs ---"
+echo "--- Starting Model Training: Flow, ED/ES pairs, all datasets ---"
 
 python run_model.py \
-    --model_type rgb \
+    --model_type flow \
     --datasets ACDC MM RECON \
-    --frame_mode next_frame \
+    --frame_mode ed_es \
     --acdc_dir ../Dataset_2 \
     --mm_dir ../Dataset_1/Training \
     --mm_val_dir ../Dataset_1/Validation \
