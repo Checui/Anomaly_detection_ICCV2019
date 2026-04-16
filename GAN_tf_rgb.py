@@ -243,7 +243,9 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
     """
     wandb.init(
         project="mres-ICCV2019",
-        name=f"rgb_epoch_{start_model_idx}_to_{max_epoch}",
+        name=f"{dataset_name}_rgb_e{start_model_idx}-{max_epoch}",
+        tags=["rgb", dataset_name],
+        group=dataset_name,
         config={
             "batch_size": batch_size,
             "max_epoch": max_epoch,
@@ -358,6 +360,11 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
         print('Run: tensorboard --logdir logs/2')
         # executive training stage
 
+        # Accumulators for per-batch loss components — used by line_series charts
+        _steps, _inten, _gradi, _appe, _ed_inten, _ed_gradi, _ed = [], [], [], [], [], [], []
+        # Accumulators for per-epoch validation losses (one point per epoch)
+        _val_epochs, _val_healthy_appe, _val_unhealthy_appe, _val_healthy_ed, _val_unhealthy_ed = [], [], [], [], []
+
         for i in range(start_model_idx, max_epoch):
             tf.set_random_seed(i)
             np.random.seed(i)
@@ -376,8 +383,12 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                                                           plh_ed_true: aug_ed_batch,
                                                           plh_is_training: True})
                 if j % 50 == 0:
-                    _, curr_G_loss, curr_loss_appe, curr_loss_ed, curr_gen_frames, curr_gen_ed, summary = \
-                                    sess.run([G_optimizer, G_loss, loss_appe, loss_ed, output_appe[:4], output_ed[:4], merge],
+                    _, curr_G_loss, curr_loss_appe, curr_loss_inten, curr_loss_gradi, \
+                    curr_loss_ed, curr_loss_ed_inten, curr_loss_ed_gradi, \
+                    curr_gen_frames, curr_gen_ed, summary = \
+                                    sess.run([G_optimizer, G_loss, loss_appe, loss_inten, loss_gradi,
+                                              loss_ed, loss_ed_inten, loss_ed_gradi,
+                                              output_appe[:4], output_ed[:4], merge],
                                              feed_dict={plh_es_true: aug_es_batch,
                                                         plh_ed_true: aug_ed_batch,
                                                         plh_is_training: True,
@@ -388,24 +399,39 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                                   curr_gen_ed, curr_gen_frames, i, j)
 
                 else:
-                    _, curr_G_loss, curr_loss_appe, curr_loss_ed, summary = sess.run([G_optimizer, G_loss, loss_appe, loss_ed, merge],
-                                                                                      feed_dict={plh_es_true: aug_es_batch,
-                                                                                                 plh_ed_true: aug_ed_batch,
-                                                                                                 plh_is_training: True,
-                                                                                                 plh_dropout_prob: p_keep})
+                    _, curr_G_loss, curr_loss_appe, curr_loss_inten, curr_loss_gradi, \
+                    curr_loss_ed, curr_loss_ed_inten, curr_loss_ed_gradi, summary = \
+                                    sess.run([G_optimizer, G_loss, loss_appe, loss_inten, loss_gradi,
+                                              loss_ed, loss_ed_inten, loss_ed_gradi, merge],
+                                             feed_dict={plh_es_true: aug_es_batch,
+                                                        plh_ed_true: aug_ed_batch,
+                                                        plh_is_training: True,
+                                                        plh_dropout_prob: p_keep})
                 # write log for tensorboard
                 train_writer.add_summary(summary, i*len(batch_idx)+j)
                 train_writer.flush()
                 print('epoch %d/%d, iter %3d/%d: D_loss = %.4f, G_loss = %.4f, loss_appe = %.4f, loss_ed = %.4f'
                       % (i+1, max_epoch, j+1, len(batch_idx), curr_D_loss, curr_G_loss, curr_loss_appe, curr_loss_ed))
                 global_step = i * len(batch_idx) + j
-                
+
+                _steps.append(global_step)
+                _inten.append(float(curr_loss_inten))
+                _gradi.append(float(curr_loss_gradi))
+                _appe.append(float(curr_loss_appe))
+                _ed_inten.append(float(curr_loss_ed_inten))
+                _ed_gradi.append(float(curr_loss_ed_gradi))
+                _ed.append(float(curr_loss_ed))
+
                 wandb.log({
-                    "Epoch": i + 1,
-                    "Discriminator_Loss": curr_D_loss,
-                    "Generator_Loss": curr_G_loss,
-                    "Appearance_Loss": curr_loss_appe,
-                    "ED_Prediction_Loss": curr_loss_ed
+                    "Epoch":                        i + 1,
+                    "Discriminator_Loss":           curr_D_loss,
+                    "Generator_Loss":               curr_G_loss,
+                    "Appearance/Intensity_MSE":     curr_loss_inten,
+                    "Appearance/Gradient":          curr_loss_gradi,
+                    "Appearance/Total":             curr_loss_appe,
+                    "ED_Prediction/Intensity_MSE":  curr_loss_ed_inten,
+                    "ED_Prediction/Gradient":       curr_loss_ed_gradi,
+                    "ED_Prediction/Total":          curr_loss_ed,
                 }, step=global_step)
                 if np.isnan(curr_D_loss) or np.isnan(curr_G_loss) or np.isnan(curr_loss_appe) or np.isnan(curr_loss_ed):
                     return
@@ -414,6 +440,25 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
             os.makedirs('./training_saver/%s' % dataset_name, exist_ok=True)
             saver.save(sess, './training_saver/%s/model_ckpt_%d.ckpt' % (dataset_name, i+1))
             np.savetxt('./training_saver/%s/train_loss_%d.txt' % (dataset_name, i+1), losses, delimiter=',')
+
+            # ── Per-epoch W&B custom charts (one line per loss component) ─
+            ep_step = (i + 1) * len(batch_idx)
+            wandb.log({
+                "charts/Appearance_Loss_Components": wandb.plot.line_series(
+                    xs=_steps,
+                    ys=[_inten, _gradi, _appe],
+                    keys=["Intensity (MSE)", "Gradient", "Total"],
+                    title="Appearance Loss Components",
+                    xname="Global Step"
+                ),
+                "charts/ED_Prediction_Loss_Components": wandb.plot.line_series(
+                    xs=_steps,
+                    ys=[_ed_inten, _ed_gradi, _ed],
+                    keys=["ED Intensity (MSE)", "ED Gradient", "ED Total"],
+                    title="ED Prediction Loss Components",
+                    xname="Global Step"
+                ),
+            }, step=ep_step)
 
             # ── Validation step ──────────────────────────────────────────
             if val_es_images is not None and val_ed_images is not None and len(val_es_images) > 0:
@@ -483,16 +528,32 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                     "Val_Appearance_Loss": epoch_val_appe,
                     "Val_ED_Prediction_Loss": epoch_val_ed,
                 }
-                if not np.isnan(val_healthy_appe):
-                    log_dict["Val_Healthy_Appearance_Loss"] = val_healthy_appe
-                    log_dict["Val_Healthy_ED_Loss"]         = val_healthy_ed
-                if not np.isnan(val_unhealthy_appe):
-                    log_dict["Val_Unhealthy_Appearance_Loss"] = val_unhealthy_appe
-                    log_dict["Val_Unhealthy_ED_Loss"]         = val_unhealthy_ed
                 if not np.isnan(auc_appe):
                     log_dict["Val_AUC_Appearance"] = auc_appe
                     log_dict["Val_AUC_ED"]         = auc_ed
                     log_dict["Val_AUC_Combined"]   = auc_combined
+
+                # ── Healthy vs Unhealthy combined charts ──────────────────
+                if not np.isnan(val_healthy_appe) and not np.isnan(val_unhealthy_appe):
+                    _val_epochs.append(global_step)
+                    _val_healthy_appe.append(float(val_healthy_appe))
+                    _val_unhealthy_appe.append(float(val_unhealthy_appe))
+                    _val_healthy_ed.append(float(val_healthy_ed))
+                    _val_unhealthy_ed.append(float(val_unhealthy_ed))
+                    log_dict["charts/Val_Appearance_Loss_by_Group"] = wandb.plot.line_series(
+                        xs=_val_epochs,
+                        ys=[_val_healthy_appe, _val_unhealthy_appe],
+                        keys=["Healthy (NOR)", "Unhealthy"],
+                        title="Val Appearance Loss: Healthy vs Unhealthy",
+                        xname="Global Step"
+                    )
+                    log_dict["charts/Val_ED_Prediction_Loss_by_Group"] = wandb.plot.line_series(
+                        xs=_val_epochs,
+                        ys=[_val_healthy_ed, _val_unhealthy_ed],
+                        keys=["Healthy (NOR)", "Unhealthy"],
+                        title="Val ED Prediction Loss: Healthy vs Unhealthy",
+                        xname="Global Step"
+                    )
                 wandb.log(log_dict, step=global_step)
 
                 val_losses = np.concatenate(

@@ -234,15 +234,17 @@ def Discriminator(frame_true, flow_hat, is_training, reuse=False, return_middle_
 def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch, dataset_name='', start_model_idx=0, batch_size=16,
                                      val_images=None, val_flows=None, val_labels=None):
     wandb.init(
-        project="mres-ICCV2019", # The overall name of your MRes project
-        name=f"run_epoch_{start_model_idx}_to_{max_epoch}", # Names this specific run
+        project="mres-ICCV2019",
+        name=f"{dataset_name}_flow_e{start_model_idx}-{max_epoch}",
+        tags=["flow", dataset_name],
+        group=dataset_name,
         config={
             "batch_size": batch_size,
             "max_epoch": max_epoch,
             "dataset_name": dataset_name,
             "start_model_idx": start_model_idx,
             "optimizer": "Adam",
-            "learning_rate_D": 0.00002, # Hardcoded in your graph, good to track here
+            "learning_rate_D": 0.00002,
             "learning_rate_G": 0.0002
         }
     )
@@ -354,6 +356,11 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
         print('Run: tensorboard --logdir logs/2')
         # executive training stage
 
+        # Accumulators for per-batch loss components — used by line_series charts
+        _steps, _inten, _gradi, _appe, _opt = [], [], [], [], []
+        # Accumulators for per-epoch validation losses (one point per epoch)
+        _val_epochs, _val_healthy_appe, _val_unhealthy_appe, _val_healthy_opt, _val_unhealthy_opt = [], [], [], [], []
+
         for i in range(start_model_idx, max_epoch):
             tf.set_random_seed(i)
             np.random.seed(i)
@@ -365,8 +372,8 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                                                               plh_flow_true: training_flows[batch_idx[j]],
                                                               plh_is_training: True})
                 if j % 50 == 0:
-                    _, curr_G_loss, curr_loss_appe, curr_loss_opt, curr_gen_frames, curr_gen_flows, summary = \
-                                    sess.run([G_optimizer, G_loss, loss_appe, loss_opt, output_appe[:4], output_opt[:4], merge],
+                    _, curr_G_loss, curr_loss_appe, curr_loss_inten, curr_loss_gradi, curr_loss_opt, curr_gen_frames, curr_gen_flows, summary = \
+                                    sess.run([G_optimizer, G_loss, loss_appe, loss_inten, loss_gradi, loss_opt, output_appe[:4], output_opt[:4], merge],
                                              feed_dict={plh_frame_true: training_images[batch_idx[j]],
                                                         plh_flow_true: training_flows[batch_idx[j]],
                                                         plh_is_training: True,
@@ -376,27 +383,35 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                                   curr_gen_flows, curr_gen_frames, i, j)
 
                 else:
-                    _, curr_G_loss, curr_loss_appe, curr_loss_opt, summary = sess.run([G_optimizer, G_loss, loss_appe, loss_opt, merge],
-                                                                                      feed_dict={plh_frame_true: training_images[batch_idx[j]],
-                                                                                                 plh_flow_true: training_flows[batch_idx[j]],
-                                                                                                 plh_is_training: True,
-                                                                                                 plh_dropout_prob: p_keep})
+                    _, curr_G_loss, curr_loss_appe, curr_loss_inten, curr_loss_gradi, curr_loss_opt, summary = \
+                                    sess.run([G_optimizer, G_loss, loss_appe, loss_inten, loss_gradi, loss_opt, merge],
+                                             feed_dict={plh_frame_true: training_images[batch_idx[j]],
+                                                        plh_flow_true: training_flows[batch_idx[j]],
+                                                        plh_is_training: True,
+                                                        plh_dropout_prob: p_keep})
                 # write log for tensorboard
                 train_writer.add_summary(summary, i*len(batch_idx)+j)
                 train_writer.flush()
                 print('epoch %d/%d, iter %3d/%d: D_loss = %.4f, G_loss = %.4f, loss_appe = %.4f, loss_flow = %.4f'
                       % (i+1, max_epoch, j+1, len(batch_idx), curr_D_loss, curr_G_loss, curr_loss_appe, curr_loss_opt))
-                # [NEW CODE] Stream metrics to the Weights & Biases dashboard
-                # Calculate the exact overall step across all epochs
+                # Stream metrics to the Weights & Biases dashboard
                 global_step = i * len(batch_idx) + j
-                
+
+                _steps.append(global_step)
+                _inten.append(float(curr_loss_inten))
+                _gradi.append(float(curr_loss_gradi))
+                _appe.append(float(curr_loss_appe))
+                _opt.append(float(curr_loss_opt))
+
                 wandb.log({
-                    "Epoch": i + 1,
-                    "Discriminator_Loss": curr_D_loss,
-                    "Generator_Loss": curr_G_loss,
-                    "Appearance_Loss": curr_loss_appe,
-                    "Optical_Flow_Loss": curr_loss_opt
-                }, step=global_step) # <-- Add step=global_step here
+                    "Epoch":                    i + 1,
+                    "Discriminator_Loss":       curr_D_loss,
+                    "Generator_Loss":           curr_G_loss,
+                    "Appearance/Intensity_MSE": curr_loss_inten,
+                    "Appearance/Gradient":      curr_loss_gradi,
+                    "Appearance/Total":         curr_loss_appe,
+                    "Flow/Total":               curr_loss_opt,
+                }, step=global_step)
                 if np.isnan(curr_D_loss) or np.isnan(curr_G_loss) or np.isnan(curr_loss_appe) or np.isnan(curr_loss_opt):
                     return
                 losses = np.concatenate((losses, [[curr_D_loss, curr_G_loss, curr_loss_appe, curr_loss_opt]]), axis=0)
@@ -404,6 +419,25 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
             os.makedirs('./training_saver/%s' % dataset_name, exist_ok=True)
             saver.save(sess, './training_saver/%s/model_ckpt_%d.ckpt' % (dataset_name, i+1))
             np.savetxt('./training_saver/%s/train_loss_%d.txt' % (dataset_name, i+1), losses, delimiter=',')
+
+            # ── Per-epoch W&B custom charts (one line per loss component) ─
+            ep_step = (i + 1) * len(batch_idx)
+            wandb.log({
+                "charts/Appearance_Loss_Components": wandb.plot.line_series(
+                    xs=_steps,
+                    ys=[_inten, _gradi, _appe],
+                    keys=["Intensity (MSE)", "Gradient", "Total"],
+                    title="Appearance Loss Components",
+                    xname="Global Step"
+                ),
+                "charts/Flow_Loss": wandb.plot.line_series(
+                    xs=_steps,
+                    ys=[_opt],
+                    keys=["Flow L1"],
+                    title="Optical Flow Loss",
+                    xname="Global Step"
+                ),
+            }, step=ep_step)
 
             # ── Validation step ──────────────────────────────────────────
             if val_images is not None and val_flows is not None and len(val_images) > 0:
@@ -477,16 +511,32 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                     "Val_Appearance_Loss": epoch_val_appe,
                     "Val_Optical_Flow_Loss": epoch_val_opt,
                 }
-                if not np.isnan(val_healthy_appe):
-                    log_dict["Val_Healthy_Appearance_Loss"] = val_healthy_appe
-                    log_dict["Val_Healthy_Flow_Loss"]       = val_healthy_opt
-                if not np.isnan(val_unhealthy_appe):
-                    log_dict["Val_Unhealthy_Appearance_Loss"] = val_unhealthy_appe
-                    log_dict["Val_Unhealthy_Flow_Loss"]       = val_unhealthy_opt
                 if not np.isnan(auc_appe):
                     log_dict["Val_AUC_Appearance"] = auc_appe
                     log_dict["Val_AUC_Flow"]       = auc_opt
                     log_dict["Val_AUC_Combined"]   = auc_combined
+
+                # ── Healthy vs Unhealthy combined charts ──────────────────
+                if not np.isnan(val_healthy_appe) and not np.isnan(val_unhealthy_appe):
+                    _val_epochs.append(global_step)
+                    _val_healthy_appe.append(float(val_healthy_appe))
+                    _val_unhealthy_appe.append(float(val_unhealthy_appe))
+                    _val_healthy_opt.append(float(val_healthy_opt))
+                    _val_unhealthy_opt.append(float(val_unhealthy_opt))
+                    log_dict["charts/Val_Appearance_Loss_by_Group"] = wandb.plot.line_series(
+                        xs=_val_epochs,
+                        ys=[_val_healthy_appe, _val_unhealthy_appe],
+                        keys=["Healthy (NOR)", "Unhealthy"],
+                        title="Val Appearance Loss: Healthy vs Unhealthy",
+                        xname="Global Step"
+                    )
+                    log_dict["charts/Val_Flow_Loss_by_Group"] = wandb.plot.line_series(
+                        xs=_val_epochs,
+                        ys=[_val_healthy_opt, _val_unhealthy_opt],
+                        keys=["Healthy (NOR)", "Unhealthy"],
+                        title="Val Flow Loss: Healthy vs Unhealthy",
+                        xname="Global Step"
+                    )
                 wandb.log(log_dict, step=global_step)
 
                 val_losses = np.concatenate(
