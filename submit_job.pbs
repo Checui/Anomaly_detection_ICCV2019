@@ -49,7 +49,9 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 # Run your Python training script
 # Note: Ensure the paths (--acdc_dir, --mm_dir, --mm_csv) perfectly match where 
 # you placed them in your ephemeral storage relative to this script.
-echo "--- Starting Model Training: Flow, ED/ES pairs, all datasets ---"
+VERSION="v1"
+
+echo "--- Starting Model Training: Flow, ED/ES pairs, all datasets (version: ${VERSION}) ---"
 
 python run_model.py \
     --model_type flow \
@@ -61,7 +63,8 @@ python run_model.py \
     --mm_csv "../Dataset_1/211230_M&Ms_Dataset_information_diagnosis_opendataset.csv" \
     --recon_dir ../reconstructed_sax_images_training_2023 \
     --epochs 100 \
-    --start_epoch 0
+    --start_epoch 0 \
+    --run_tag "${VERSION}"
 
 echo "--- Training finished ---"
 echo "Job finished on $(date)"
