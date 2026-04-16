@@ -360,6 +360,8 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
         _steps, _inten, _gradi, _appe, _opt = [], [], [], [], []
         # Accumulators for per-epoch validation losses (one point per epoch)
         _val_epochs, _val_healthy_appe, _val_unhealthy_appe, _val_healthy_opt, _val_unhealthy_opt = [], [], [], [], []
+        _val_disease_appe = {}   # disease_label -> [mean_appe per epoch]
+        _val_disease_opt  = {}   # disease_label -> [mean_opt  per epoch]
 
         for i in range(start_model_idx, max_epoch):
             tf.set_random_seed(i)
@@ -491,6 +493,19 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                         print('  [VAL-Unhealthy] appe = %.4f, flow = %.4f  (%d samples)'
                               % (val_unhealthy_appe, val_unhealthy_opt, np.sum(unhealthy_mask)))
 
+                    # ── Per-disease breakdown ─────────────────────────────
+                    for disease in sorted(np.unique(labels_arr)):
+                        mask = (labels_arr == disease)
+                        d_appe = float(np.mean(per_sample_appe[mask]))
+                        d_opt  = float(np.mean(per_sample_opt[mask]))
+                        print('  [VAL-%s] appe = %.4f, flow = %.4f  (%d samples)'
+                              % (disease, d_appe, d_opt, np.sum(mask)))
+                        if disease not in _val_disease_appe:
+                            _val_disease_appe[disease] = []
+                            _val_disease_opt[disease]  = []
+                        _val_disease_appe[disease].append(d_appe)
+                        _val_disease_opt[disease].append(d_opt)
+
                     # ── AUC: higher recon error → unhealthy (label=1) ────
                     if np.any(healthy_mask) and np.any(unhealthy_mask):
                         binary_labels = unhealthy_mask.astype(int)  # NOR=0, disease=1
@@ -537,6 +552,22 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                         title="Val Flow Loss: Healthy vs Unhealthy",
                         xname="Global Step"
                     )
+                    if _val_disease_appe:
+                        sorted_diseases = sorted(_val_disease_appe.keys())
+                        log_dict["charts/Val_Appearance_Loss_by_Disease"] = wandb.plot.line_series(
+                            xs=_val_epochs,
+                            ys=[_val_disease_appe[d] for d in sorted_diseases],
+                            keys=sorted_diseases,
+                            title="Val Appearance Loss per Disease",
+                            xname="Global Step"
+                        )
+                        log_dict["charts/Val_Flow_Loss_by_Disease"] = wandb.plot.line_series(
+                            xs=_val_epochs,
+                            ys=[_val_disease_opt[d] for d in sorted_diseases],
+                            keys=sorted_diseases,
+                            title="Val Flow Loss per Disease",
+                            xname="Global Step"
+                        )
                 wandb.log(log_dict, step=global_step)
 
                 val_losses = np.concatenate(
