@@ -394,8 +394,9 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             continue
 
         try:
-            ed_idx = int(info['ED']) 
-            es_idx = int(info['ES'])
+            # ACDC Info.cfg uses 1-based frame indices; subtract 1 for 0-based numpy indexing
+            ed_idx = int(info['ED']) - 1
+            es_idx = int(info['ES']) - 1
         except (KeyError, ValueError) as e:
             print(f"Missing ED/ES in {p}: {e}")
             continue
@@ -1032,8 +1033,9 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
     def _process_patient_ed_es(p, p_dir, group):
         info = patient_info[p]
         try:
-            ed_idx = int(info['ED'])
-            es_idx = int(info['ES'])
+            # ACDC Info.cfg uses 1-based frame indices; subtract 1 for 0-based numpy indexing
+            ed_idx = int(info['ED']) - 1
+            es_idx = int(info['ES']) - 1
         except (KeyError, ValueError) as e:
             print(f"Missing ED/ES in {p}: {e}")
             return [], [], [], []
@@ -1287,8 +1289,9 @@ def load_acdc_ed_es_data(acdc_dir, target_size=(128, 128)):
             continue
 
         try:
-            ed_idx = int(info['ED'])
-            es_idx = int(info['ES'])
+            # ACDC Info.cfg uses 1-based frame indices; subtract 1 for 0-based numpy indexing
+            ed_idx = int(info['ED']) - 1
+            es_idx = int(info['ES']) - 1
         except (KeyError, ValueError) as e:
             print(f"Missing ED/ES in {p}: {e}")
             continue

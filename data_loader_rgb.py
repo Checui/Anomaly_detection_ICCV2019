@@ -309,12 +309,13 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path, target_size=(1
             mask_arr = load_and_orient_sitk(mask_path)
             # FIXED: Pass mask_arr into the extractor!
             # imgs, targets = extract_edes_pairs(img_arr, mask_arr, int(info['ED']), int(info['ES']), target_size)
-            imgs, targets = extract_edes_pairs(img_arr, 0, int(info['ED']), int(info['ES']), target_size)
+            # ACDC Info.cfg uses 1-based frame indices; subtract 1 for 0-based numpy indexing
+            imgs, targets = extract_edes_pairs(img_arr, 0, int(info['ED']) - 1, int(info['ES']) - 1, target_size)
             all_images.extend(imgs)
             all_targets.extend(targets)
         except Exception as e:
             print(f"Error processing ACDC {p}: {e}")
-            
+
     acdc_count = len(all_images)
     print(f"ACDC NOR ED/ES samples: {acdc_count}")
 
@@ -494,7 +495,8 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
             # FIXED: Pass mask_arr into the extractor!
             # imgs, targets = extract_edes_pairs(img_arr, mask_arr, int(info['ED']), int(info['ES']), target_size)
             # resize
-            imgs, targets = extract_edes_pairs(img_arr, 0, int(info['ED']), int(info['ES']), target_size)
+            # ACDC Info.cfg uses 1-based frame indices; subtract 1 for 0-based numpy indexing
+            imgs, targets = extract_edes_pairs(img_arr, 0, int(info['ED']) - 1, int(info['ES']) - 1, target_size)
             labels, pids = [info['Group']] * len(imgs), [p] * len(imgs)
             
             if p in val_set:
@@ -637,8 +639,9 @@ def load_acdc_ed_es_data(acdc_dir, target_size=(128, 128)):
             continue
         try:
             img_arr = load_and_orient_sitk(nii_path)
+            # ACDC Info.cfg uses 1-based frame indices; subtract 1 for 0-based numpy indexing
             imgs, targets = extract_edes_pairs(
-                img_arr, 0, int(info['ED']), int(info['ES']), target_size)
+                img_arr, 0, int(info['ED']) - 1, int(info['ES']) - 1, target_size)
             all_images.extend(imgs)
             all_targets.extend(targets)
         except Exception as e:
