@@ -81,7 +81,11 @@ Both files share the same layer primitives (`conv2d`, `conv_transpose`, `conv2d_
 - `loss_appe`: MSE + gradient loss between reconstructed and input frame.
 - `loss_aux`: L1 loss between predicted auxiliary output and ground truth (flow or ED frame).
 
-**Anomaly scoring at validation** — per-sample `loss_appe` and `loss_aux` are computed independently; AUROC is logged for each and for the combined score `loss_appe + 2×loss_aux`. Higher loss = more anomalous.
+**Anomaly scoring at validation** — per-sample `loss_appe` and `loss_aux` are computed independently; AUROC is logged for each. The combined score uses a log-ratio formula that mirrors `full_assess_AUC` / `get_weights()` in `utils.py`:
+```
+combined = log(loss_appe / μ_appe) + 2 × log(loss_aux / μ_aux)
+```
+where `μ_appe` / `μ_aux` are the mean per-sample losses over the **entire training set in eval mode**, recomputed each validation epoch. A healthy frame scores ≈ 0; anomalous frames score positive. Training baselines are also logged to W&B as `Train_Baseline_Appe` / `Train_Baseline_Opt` (`GAN_tf`) or `Train_Baseline_ED` (`GAN_tf_rgb`). Note: the training-set eval pass runs every validation epoch — roughly doubles validation wall time.
 
 **`GAN_tf_rgb.py` differences:**
 - `augment_paired_batch()` applies random 90° rotations to (ES, ED) pairs during training.

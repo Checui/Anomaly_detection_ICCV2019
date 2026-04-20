@@ -471,6 +471,29 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
 
             # ── Validation step ──────────────────────────────────────────
             if val_es_images is not None and val_ed_images is not None and len(val_es_images) > 0:
+                # ── Training baseline (eval mode, mirrors utils.py get_weights) ──
+                train_batch_idx_eval = np.array_split(
+                    np.arange(len(training_es_images)),
+                    max(1, int(np.ceil(len(training_es_images) / batch_size)))
+                )
+                _tr_appe = np.zeros(len(training_es_images))
+                _tr_ed   = np.zeros(len(training_es_images))
+                for tb in train_batch_idx_eval:
+                    _ps_a, _ps_e = sess.run(
+                        [ps_loss_appe, ps_loss_ed],
+                        feed_dict={
+                            plh_es_true:      training_es_images[tb],
+                            plh_ed_true:      training_ed_images[tb],
+                            plh_is_training:  False,
+                            plh_dropout_prob: 1.0,
+                        }
+                    )
+                    _tr_appe[tb] = _ps_a
+                    _tr_ed[tb]   = _ps_e
+                mu_appe = float(np.mean(_tr_appe))
+                mu_ed   = float(np.mean(_tr_ed))
+                print('  [TRAIN-BASELINE] mu_appe = %.4f, mu_ed = %.4f' % (mu_appe, mu_ed))
+
                 val_batch_idx = np.array_split(
                     np.arange(len(val_es_images)),
                     max(1, int(np.ceil(len(val_es_images) / batch_size)))
@@ -536,7 +559,11 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                         try:
                             auc_appe = roc_auc_score(binary_labels, per_sample_appe)
                             auc_ed   = roc_auc_score(binary_labels, per_sample_ed)
-                            combined_score = per_sample_appe + 2.0 * per_sample_ed
+                            eps = 1e-10
+                            combined_score = (
+                                np.log(np.maximum(per_sample_appe, eps) / max(mu_appe, eps))
+                                + 2.0 * np.log(np.maximum(per_sample_ed, eps) / max(mu_ed, eps))
+                            )
                             auc_combined = roc_auc_score(binary_labels, combined_score)
                             print('  [VAL-AUC]  appe = %.4f, ed = %.4f, combined = %.4f'
                                   % (auc_appe, auc_ed, auc_combined))
@@ -550,6 +577,8 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                     "Val_Appearance_Loss": epoch_val_appe,
                     "Val_ED_Prediction_Loss": epoch_val_ed,
                 }
+                log_dict["Train_Baseline_Appe"] = mu_appe
+                log_dict["Train_Baseline_ED"]   = mu_ed
                 if not np.isnan(auc_appe):
                     log_dict["Val_AUC_Appearance"] = auc_appe
                     log_dict["Val_AUC_ED"]         = auc_ed
