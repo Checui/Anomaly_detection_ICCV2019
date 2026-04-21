@@ -16,6 +16,16 @@ from ProgressBar import ProgressBar
 import wandb
 from sklearn.metrics import roc_auc_score
 
+
+def _wandb_line_series(xs, ys, keys, title, xname="step"):
+    """Multi-line wandb chart using the non-deprecated Table+line API."""
+    rows = []
+    for i, x in enumerate(xs):
+        for key, y_list in zip(keys, ys):
+            rows.append([x, y_list[i], key])
+    table = wandb.Table(data=rows, columns=[xname, "value", "series"])
+    return wandb.plot.line(table, xname, "value", stroke="series", title=title)
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 p_keep = 0.7
@@ -453,14 +463,14 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
             # ── Per-epoch W&B custom charts (one line per loss component) ─
             ep_step = (i + 1) * len(batch_idx)
             wandb.log({
-                "charts/Appearance_Loss_Components": wandb.plot.line_series(
+                "charts/Appearance_Loss_Components": _wandb_line_series(
                     xs=_steps,
                     ys=[_inten, _gradi, _appe],
                     keys=["Intensity (MSE)", "Gradient", "Total"],
                     title="Appearance Loss Components",
                     xname="Global Step"
                 ),
-                "charts/ED_Prediction_Loss_Components": wandb.plot.line_series(
+                "charts/ED_Prediction_Loss_Components": _wandb_line_series(
                     xs=_steps,
                     ys=[_ed_inten, _ed_gradi, _ed],
                     keys=["ED Intensity (MSE)", "ED Gradient", "ED Total"],
@@ -591,14 +601,14 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                     _val_unhealthy_appe.append(float(val_unhealthy_appe))
                     _val_healthy_ed.append(float(val_healthy_ed))
                     _val_unhealthy_ed.append(float(val_unhealthy_ed))
-                    log_dict["charts/Val_Appearance_Loss_by_Group"] = wandb.plot.line_series(
+                    log_dict["charts/Val_Appearance_Loss_by_Group"] = _wandb_line_series(
                         xs=_val_epochs,
                         ys=[_val_healthy_appe, _val_unhealthy_appe],
                         keys=["Healthy (NOR)", "Unhealthy"],
                         title="Val Appearance Loss: Healthy vs Unhealthy",
                         xname="Global Step"
                     )
-                    log_dict["charts/Val_ED_Prediction_Loss_by_Group"] = wandb.plot.line_series(
+                    log_dict["charts/Val_ED_Prediction_Loss_by_Group"] = _wandb_line_series(
                         xs=_val_epochs,
                         ys=[_val_healthy_ed, _val_unhealthy_ed],
                         keys=["Healthy (NOR)", "Unhealthy"],
@@ -607,14 +617,14 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                     )
                     if _val_disease_appe:
                         sorted_diseases = sorted(_val_disease_appe.keys())
-                        log_dict["charts/Val_Appearance_Loss_by_Disease"] = wandb.plot.line_series(
+                        log_dict["charts/Val_Appearance_Loss_by_Disease"] = _wandb_line_series(
                             xs=_val_epochs,
                             ys=[_val_disease_appe[d] for d in sorted_diseases],
                             keys=sorted_diseases,
                             title="Val Appearance Loss per Disease",
                             xname="Global Step"
                         )
-                        log_dict["charts/Val_ED_Prediction_Loss_by_Disease"] = wandb.plot.line_series(
+                        log_dict["charts/Val_ED_Prediction_Loss_by_Disease"] = _wandb_line_series(
                             xs=_val_epochs,
                             ys=[_val_disease_ed[d] for d in sorted_diseases],
                             keys=sorted_diseases,
