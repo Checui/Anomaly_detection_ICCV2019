@@ -81,11 +81,21 @@ Both files share the same layer primitives (`conv2d`, `conv_transpose`, `conv2d_
 - `loss_appe`: MSE + gradient loss between reconstructed and input frame.
 - `loss_aux`: L1 loss between predicted auxiliary output and ground truth (flow or ED frame).
 
-**Anomaly scoring at validation** — per-sample `loss_appe` and `loss_aux` are computed independently; AUROC is logged for each. The combined score uses a log-ratio formula that mirrors `full_assess_AUC` / `get_weights()` in `utils.py`:
+**Anomaly scoring at validation** — two parallel scoring pipelines run every validation epoch:
+
+**Full-frame (non-patch):** per-sample `loss_appe` and `loss_aux` reduced over all spatial dims. Combined score:
 ```
 combined = log(loss_appe / μ_appe) + 2 × log(loss_aux / μ_aux)
 ```
-where `μ_appe` / `μ_aux` are the mean per-sample losses over the **entire training set in eval mode**, recomputed each validation epoch. A healthy frame scores ≈ 0; anomalous frames score positive. Training baselines are also logged to W&B as `Train_Baseline_Appe` / `Train_Baseline_Opt` (`GAN_tf`) or `Train_Baseline_ED` (`GAN_tf_rgb`). Note: the training-set eval pass runs every validation epoch — roughly doubles validation wall time.
+Logged to W&B as `Val_AUC_Appearance`, `Val_AUC_Flow` / `Val_AUC_ED`, `Val_AUC_Combined`.
+
+**Patch-based (mirrors paper Section 3.5):** raw 2D MSE diff maps `[B, H, W]` are computed by reducing over channels only. `compute_patch_scores()` in `utils.py` wraps the existing `find_max_patch()` (16×16 patch, stride 4) to select the patch with highest mean flow/ED MSE per image, then reads appearance MSE at that same position. Combined score uses the paper formula:
+```
+combined_patch = log(S_F(P̃) / μ_F) + 0.2 × log(S_I(P̃) / μ_I)
+```
+where `P̃` is the worst-flow patch. Logged to W&B as `Val_AUC_Appe_Patch`, `Val_AUC_Flow_Patch` / `Val_AUC_ED_Patch`, `Val_AUC_Combined_Patch`. Printed as `[VAL-AUC-PATCH]`.
+
+In both pipelines, `μ_*` are the mean per-sample scores computed over the **entire training set in eval mode**, recomputed each validation epoch. Training baselines logged as `Train_Baseline_Appe` / `Train_Baseline_Opt` (`GAN_tf`) or `Train_Baseline_ED` (`GAN_tf_rgb`). Note: the training-set eval pass runs every validation epoch — roughly doubles validation wall time.
 
 **`GAN_tf_rgb.py` differences:**
 - `augment_paired_batch()` applies random 90° rotations to (ES, ED) pairs during training.
