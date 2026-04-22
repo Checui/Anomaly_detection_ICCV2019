@@ -7,7 +7,7 @@ import numpy as np
 import tensorflow as tf
 from scipy.io import savemat, loadmat
 
-from utils import load_images_and_flow_1clip
+from utils import load_images_and_flow_1clip, compute_patch_scores
 # from plot_entire_one_frame import flow_to_color
 
 from ProgressBar import ProgressBar
@@ -308,6 +308,10 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
     ps_loss_ed   = tf.reduce_mean((output_ed - scaled_ed)**2, axis=[1, 2, 3]) + \
                    tf.reduce_mean(tf.abs(tf.abs(dy_ed1)-tf.abs(dy_ed0)) + tf.abs(tf.abs(dx_ed1)-tf.abs(dx_ed0)), axis=[1, 2, 3])
 
+    # Raw 2D diff maps for patch-based scoring (reduce over channels only → [B, H, W])
+    raw_diff_map_ed   = tf.reduce_mean((output_ed - scaled_ed)**2, axis=-1)
+    raw_diff_map_appe = tf.reduce_mean((output_appe - scaled_es)**2, axis=-1)
+
     # GAN loss
     D_loss = 0.5*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_real_logits, labels=tf.ones_like(D_real))) + \
              0.5*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_fake_logits, labels=tf.zeros_like(D_fake)))
@@ -488,9 +492,11 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                 )
                 _tr_appe = np.zeros(len(training_es_images))
                 _tr_ed   = np.zeros(len(training_es_images))
+                _tr_appe_patch = np.zeros(len(training_es_images))
+                _tr_ed_patch   = np.zeros(len(training_es_images))
                 for tb in train_batch_idx_eval:
-                    _ps_a, _ps_e = sess.run(
-                        [ps_loss_appe, ps_loss_ed],
+                    _ps_a, _ps_e, _raw_ed, _raw_a = sess.run(
+                        [ps_loss_appe, ps_loss_ed, raw_diff_map_ed, raw_diff_map_appe],
                         feed_dict={
                             plh_es_true:      training_es_images[tb],
                             plh_ed_true:      training_ed_images[tb],
@@ -500,8 +506,13 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                     )
                     _tr_appe[tb] = _ps_a
                     _tr_ed[tb]   = _ps_e
+                    _pf, _pa = compute_patch_scores(_raw_ed, _raw_a)
+                    _tr_ed_patch[tb]   = _pf
+                    _tr_appe_patch[tb] = _pa
                 mu_appe = float(np.mean(_tr_appe))
                 mu_ed   = float(np.mean(_tr_ed))
+                mu_appe_patch = float(np.mean(_tr_appe_patch))
+                mu_ed_patch   = float(np.mean(_tr_ed_patch))
                 print('  [TRAIN-BASELINE] mu_appe = %.4f, mu_ed = %.4f' % (mu_appe, mu_ed))
 
                 val_batch_idx = np.array_split(
@@ -510,10 +521,12 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                 )
                 per_sample_appe = np.zeros(len(val_es_images))
                 per_sample_ed   = np.zeros(len(val_es_images))
+                per_sample_appe_patch = np.zeros(len(val_es_images))
+                per_sample_ed_patch   = np.zeros(len(val_es_images))
 
                 for vb in val_batch_idx:
-                    ps_appe_vals, ps_ed_vals = sess.run(
-                        [ps_loss_appe, ps_loss_ed],
+                    ps_appe_vals, ps_ed_vals, raw_ed, raw_a = sess.run(
+                        [ps_loss_appe, ps_loss_ed, raw_diff_map_ed, raw_diff_map_appe],
                         feed_dict={
                             plh_es_true: val_es_images[vb],
                             plh_ed_true: val_ed_images[vb],
@@ -523,6 +536,9 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                     )
                     per_sample_appe[vb] = ps_appe_vals
                     per_sample_ed[vb]   = ps_ed_vals
+                    pf, pa = compute_patch_scores(raw_ed, raw_a)
+                    per_sample_ed_patch[vb]   = pf
+                    per_sample_appe_patch[vb] = pa
 
                 epoch_val_appe = np.mean(per_sample_appe)
                 epoch_val_ed   = np.mean(per_sample_ed)
@@ -533,6 +549,7 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                 val_healthy_appe = val_healthy_ed = np.nan
                 val_unhealthy_appe = val_unhealthy_ed = np.nan
                 auc_appe = auc_ed = auc_combined = np.nan
+                auc_appe_patch = auc_ed_patch = auc_combined_patch = np.nan
 
                 if val_labels is not None and len(val_labels) == len(val_es_images):
                     labels_arr = np.array(val_labels)
@@ -580,6 +597,20 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                         except ValueError as e:
                             print(f'  [VAL-AUC] could not compute: {e}')
 
+                        # ── Patch-based AUC (mirrors paper Section 3.5) ──────
+                        try:
+                            auc_appe_patch = roc_auc_score(binary_labels, per_sample_appe_patch)
+                            auc_ed_patch   = roc_auc_score(binary_labels, per_sample_ed_patch)
+                            combined_patch = (
+                                np.log(np.maximum(per_sample_ed_patch, eps) / max(mu_ed_patch, eps))
+                                + 0.2 * np.log(np.maximum(per_sample_appe_patch, eps) / max(mu_appe_patch, eps))
+                            )
+                            auc_combined_patch = roc_auc_score(binary_labels, combined_patch)
+                            print('  [VAL-AUC-PATCH] appe = %.4f, ed = %.4f, combined = %.4f'
+                                  % (auc_appe_patch, auc_ed_patch, auc_combined_patch))
+                        except ValueError as e:
+                            print(f'  [VAL-AUC-PATCH] could not compute: {e}')
+
                 global_step = (i + 1) * len(batch_idx)
 
                 log_dict = {
@@ -593,6 +624,10 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                     log_dict["Val_AUC_Appearance"] = auc_appe
                     log_dict["Val_AUC_ED"]         = auc_ed
                     log_dict["Val_AUC_Combined"]   = auc_combined
+                if not np.isnan(auc_appe_patch):
+                    log_dict["Val_AUC_Appe_Patch"]     = auc_appe_patch
+                    log_dict["Val_AUC_ED_Patch"]       = auc_ed_patch
+                    log_dict["Val_AUC_Combined_Patch"] = auc_combined_patch
 
                 # ── Healthy vs Unhealthy combined charts ──────────────────
                 if not np.isnan(val_healthy_appe) and not np.isnan(val_unhealthy_appe):

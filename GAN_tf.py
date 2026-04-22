@@ -9,7 +9,7 @@ import numpy as np
 import tensorflow as tf
 from scipy.io import savemat, loadmat
 
-from utils import load_images_and_flow_1clip
+from utils import load_images_and_flow_1clip, compute_patch_scores
 # from plot_entire_one_frame import flow_to_color
 
 from ProgressBar import ProgressBar
@@ -304,6 +304,10 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
     ps_loss_appe = ps_loss_inten + ps_loss_gradi
     ps_loss_opt  = tf.reduce_mean(tf.abs(output_opt - plh_flow_true), axis=[1, 2, 3])
 
+    # Raw 2D diff maps for patch-based scoring (reduce over channels only → [B, H, W])
+    raw_diff_map_flow = tf.reduce_mean((output_opt - plh_flow_true)**2, axis=-1)
+    raw_diff_map_appe = tf.reduce_mean((output_appe - scaled_frame_true)**2, axis=-1)
+
     # GAN loss
     D_loss = 0.5*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_real_logits, labels=tf.ones_like(D_real))) + \
              0.5*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_fake_logits, labels=tf.zeros_like(D_fake)))
@@ -460,9 +464,11 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 )
                 _tr_appe = np.zeros(len(training_images))
                 _tr_opt  = np.zeros(len(training_images))
+                _tr_appe_patch = np.zeros(len(training_images))
+                _tr_opt_patch  = np.zeros(len(training_images))
                 for tb in train_batch_idx_eval:
-                    _ps_a, _ps_o = sess.run(
-                        [ps_loss_appe, ps_loss_opt],
+                    _ps_a, _ps_o, _raw_f, _raw_a = sess.run(
+                        [ps_loss_appe, ps_loss_opt, raw_diff_map_flow, raw_diff_map_appe],
                         feed_dict={
                             plh_frame_true:   training_images[tb],
                             plh_flow_true:    training_flows[tb],
@@ -472,8 +478,13 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                     )
                     _tr_appe[tb] = _ps_a
                     _tr_opt[tb]  = _ps_o
+                    _pf, _pa = compute_patch_scores(_raw_f, _raw_a)
+                    _tr_opt_patch[tb]  = _pf
+                    _tr_appe_patch[tb] = _pa
                 mu_appe = float(np.mean(_tr_appe))
                 mu_opt  = float(np.mean(_tr_opt))
+                mu_appe_patch = float(np.mean(_tr_appe_patch))
+                mu_opt_patch  = float(np.mean(_tr_opt_patch))
                 print('  [TRAIN-BASELINE] mu_appe = %.4f, mu_opt = %.4f' % (mu_appe, mu_opt))
 
                 val_batch_idx = np.array_split(
@@ -483,10 +494,12 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 # Collect TRUE per-sample losses (not batch-means)
                 per_sample_appe = np.zeros(len(val_images))
                 per_sample_opt  = np.zeros(len(val_images))
+                per_sample_appe_patch = np.zeros(len(val_images))
+                per_sample_opt_patch  = np.zeros(len(val_images))
 
                 for vb in val_batch_idx:
-                    ps_appe_vals, ps_opt_vals = sess.run(
-                        [ps_loss_appe, ps_loss_opt],
+                    ps_appe_vals, ps_opt_vals, raw_f, raw_a = sess.run(
+                        [ps_loss_appe, ps_loss_opt, raw_diff_map_flow, raw_diff_map_appe],
                         feed_dict={
                             plh_frame_true: val_images[vb],
                             plh_flow_true:  val_flows[vb],
@@ -496,6 +509,9 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                     )
                     per_sample_appe[vb] = ps_appe_vals
                     per_sample_opt[vb]  = ps_opt_vals
+                    pf, pa = compute_patch_scores(raw_f, raw_a)
+                    per_sample_opt_patch[vb]  = pf
+                    per_sample_appe_patch[vb] = pa
 
                 # ── Combined loss ────────────────────────────────────────
                 epoch_val_appe = np.mean(per_sample_appe)
@@ -508,6 +524,7 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 val_healthy_appe = val_healthy_opt = np.nan
                 val_unhealthy_appe = val_unhealthy_opt = np.nan
                 auc_appe = auc_opt = auc_combined = np.nan
+                auc_appe_patch = auc_opt_patch = auc_combined_patch = np.nan
 
                 if val_labels is not None and len(val_labels) == len(val_images):
                     labels_arr = np.array(val_labels)
@@ -556,6 +573,20 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                         except ValueError as e:
                             print(f'  [VAL-AUC] could not compute: {e}')
 
+                        # ── Patch-based AUC (mirrors paper Section 3.5) ──────
+                        try:
+                            auc_appe_patch = roc_auc_score(binary_labels, per_sample_appe_patch)
+                            auc_opt_patch  = roc_auc_score(binary_labels, per_sample_opt_patch)
+                            combined_patch = (
+                                np.log(np.maximum(per_sample_opt_patch, eps) / max(mu_opt_patch, eps))
+                                + 0.2 * np.log(np.maximum(per_sample_appe_patch, eps) / max(mu_appe_patch, eps))
+                            )
+                            auc_combined_patch = roc_auc_score(binary_labels, combined_patch)
+                            print('  [VAL-AUC-PATCH] appe = %.4f, flow = %.4f, combined = %.4f'
+                                  % (auc_appe_patch, auc_opt_patch, auc_combined_patch))
+                        except ValueError as e:
+                            print(f'  [VAL-AUC-PATCH] could not compute: {e}')
+
                 global_step = (i + 1) * len(batch_idx)
 
                 log_dict = {
@@ -569,6 +600,10 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                     log_dict["Val_AUC_Appearance"] = auc_appe
                     log_dict["Val_AUC_Flow"]       = auc_opt
                     log_dict["Val_AUC_Combined"]   = auc_combined
+                if not np.isnan(auc_appe_patch):
+                    log_dict["Val_AUC_Appe_Patch"]     = auc_appe_patch
+                    log_dict["Val_AUC_Flow_Patch"]     = auc_opt_patch
+                    log_dict["Val_AUC_Combined_Patch"] = auc_combined_patch
 
                 # ── Healthy vs Unhealthy combined charts ──────────────────
                 if not np.isnan(val_healthy_appe) and not np.isnan(val_unhealthy_appe):

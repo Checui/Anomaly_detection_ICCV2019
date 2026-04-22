@@ -452,6 +452,26 @@ def find_max_patch(diff_map_flow, diff_map_appe, size=16, step=4, plot=False):
     return max_val_mean, std_1, std_appe_1, mean_appe_1, mean_2, max_val_std, std_appe_2, mean_appe_2
 
 
+def compute_patch_scores(diff_maps_flow, diff_maps_appe, size=16, step=4):
+    """Apply find_max_patch to a batch of 2D diff maps.
+
+    Selects the patch with highest mean flow error, then returns the flow score
+    (max_val_mean) and the appearance score at that same patch position (mean_appe_1).
+    Mirrors Section 3.5 of Nguyen & Meunier, ICCV 2019.
+
+    Returns (patch_flow, patch_appe) each of shape (N,).
+    """
+    n = diff_maps_flow.shape[0]
+    patch_flow = np.zeros(n)
+    patch_appe = np.zeros(n)
+    for i in range(n):
+        max_val_mean, _, _, mean_appe_1, *_ = find_max_patch(
+            diff_maps_flow[i], diff_maps_appe[i], size=size, step=step)
+        patch_flow[i] = max_val_mean
+        patch_appe[i] = mean_appe_1
+    return patch_flow, patch_appe
+
+
 def calc_score_max_patch_one_clip(dataset, epoch, clip_idx, step=4, train=False, force_calc=False):
     saved_data_path = './training_saver/%s/output_%s/%d_epoch' % (dataset['name'], 'train' if train else 'test', epoch)
     saved_score_file = '%s/patch_score_epoch_%d_clip_%d_step_%d.npz' % (saved_data_path, epoch, clip_idx + 1, step)
