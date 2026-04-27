@@ -564,8 +564,8 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                             auc_opt  = roc_auc_score(binary_labels, per_sample_opt)
                             eps = 1e-10
                             combined_score = (
-                                np.log(np.maximum(per_sample_appe, eps) / max(mu_appe, eps))
-                                + 2.0 * np.log(np.maximum(per_sample_opt, eps) / max(mu_opt, eps))
+                                np.log(np.maximum(per_sample_opt, eps) / max(mu_opt, eps))
+                                + 0.2 * np.log(np.maximum(per_sample_appe, eps) / max(mu_appe, eps))
                             )
                             auc_combined = roc_auc_score(binary_labels, combined_score)
                             print('  [VAL-AUC]  appe = %.4f, flow = %.4f, combined = %.4f'

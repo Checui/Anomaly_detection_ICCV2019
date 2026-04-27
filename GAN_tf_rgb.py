@@ -326,11 +326,7 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     with tf.control_dependencies(update_ops):
         D_optimizer = tf.train.AdamOptimizer(learning_rate=0.00002, beta1=0.5, beta2=0.9, name='AdamD').minimize(D_loss, var_list=d_vars)
-        G_adam = tf.train.AdamOptimizer(learning_rate=0.0002, beta1=0.5, beta2=0.9, name='AdamG')
-        G_grads_and_vars = G_adam.compute_gradients(G_loss_total, var_list=g_vars)
-        G_grads, G_vars_clipped = zip(*G_grads_and_vars)
-        G_grads_clipped, G_global_norm = tf.clip_by_global_norm(G_grads, clip_norm=5.0)
-        G_optimizer = G_adam.apply_gradients(zip(G_grads_clipped, G_vars_clipped))
+        G_optimizer = tf.train.AdamOptimizer(learning_rate=0.0002, beta1=0.5, beta2=0.9, name='AdamG').minimize(G_loss_total, var_list=g_vars)
     init_op = tf.global_variables_initializer()
 
     # tensorboard
@@ -405,10 +401,10 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                 if j % 50 == 0:
                     _, curr_G_loss, curr_loss_appe, curr_loss_inten, curr_loss_gradi, \
                     curr_loss_ed, curr_loss_ed_inten, curr_loss_ed_gradi, \
-                    curr_gen_frames, curr_gen_ed, curr_G_grad_norm, summary = \
+                    curr_gen_frames, curr_gen_ed, summary = \
                                     sess.run([G_optimizer, G_loss, loss_appe, loss_inten, loss_gradi,
                                               loss_ed, loss_ed_inten, loss_ed_gradi,
-                                              output_appe[:4], output_ed[:4], G_global_norm, merge],
+                                              output_appe[:4], output_ed[:4], merge],
                                              feed_dict={plh_es_true: aug_es_batch,
                                                         plh_ed_true: aug_ed_batch,
                                                         plh_is_training: True,
@@ -421,10 +417,10 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                 else:
                     _, curr_G_loss, curr_loss_appe, curr_loss_inten, curr_loss_gradi, \
                     curr_loss_ed, curr_loss_ed_inten, curr_loss_ed_gradi, \
-                    curr_G_grad_norm, summary = \
+                    summary = \
                                     sess.run([G_optimizer, G_loss, loss_appe, loss_inten, loss_gradi,
                                               loss_ed, loss_ed_inten, loss_ed_gradi,
-                                              G_global_norm, merge],
+                                              merge],
                                              feed_dict={plh_es_true: aug_es_batch,
                                                         plh_ed_true: aug_ed_batch,
                                                         plh_is_training: True,
@@ -454,7 +450,6 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                     "ED_Prediction/Intensity_MSE":  curr_loss_ed_inten,
                     "ED_Prediction/Gradient":       curr_loss_ed_gradi,
                     "ED_Prediction/Total":          curr_loss_ed,
-                    "Generator/Grad_Global_Norm":   curr_G_grad_norm,
                 }, step=global_step)
                 if np.isnan(curr_D_loss) or np.isnan(curr_G_loss) or np.isnan(curr_loss_appe) or np.isnan(curr_loss_ed):
                     return
@@ -588,8 +583,8 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                             auc_ed   = roc_auc_score(binary_labels, per_sample_ed)
                             eps = 1e-10
                             combined_score = (
-                                np.log(np.maximum(per_sample_appe, eps) / max(mu_appe, eps))
-                                + 2.0 * np.log(np.maximum(per_sample_ed, eps) / max(mu_ed, eps))
+                                np.log(np.maximum(per_sample_ed, eps) / max(mu_ed, eps))
+                                + 0.2 * np.log(np.maximum(per_sample_appe, eps) / max(mu_appe, eps))
                             )
                             auc_combined = roc_auc_score(binary_labels, combined_score)
                             print('  [VAL-AUC]  appe = %.4f, ed = %.4f, combined = %.4f'
