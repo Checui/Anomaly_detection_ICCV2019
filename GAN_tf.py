@@ -170,8 +170,8 @@ def Generator(input_data, is_training, keep_prob, return_layers=False):
             """Layers used during upsampling"""
             u = conv_transpose(layer_input, out_shape, filter_size=filter_size, scope='deconv')
             u = tf.layers.batch_normalization(u, training=training)
+            u = tf.nn.leaky_relu(u)
             u = tf.nn.dropout(u, p_keep_drop)
-            u = tf.nn.relu(u)
             if skip_input is not None:
                 u = tf.concat([u, skip_input], -1)
             return u
@@ -197,14 +197,16 @@ def Generator(input_data, is_training, keep_prob, return_layers=False):
         h3fl = G_deconv_bn_dr_relu_concat(h4fl, h3, [b_size, h//4, w//4, filters*4], filter_size, keep_prob, training=is_training, scope='gen_h3fl')
         h2fl = G_deconv_bn_dr_relu_concat(h3fl, h2, [b_size, h//2, w//2, filters*2], filter_size, keep_prob, training=is_training, scope='gen_h2fl')
         h1fl = G_deconv_bn_dr_relu_concat(h2fl, h1, [b_size, h, w, filters], filter_size, keep_prob, training=is_training, scope='gen_h1fl')
-        out_flow = conv2d(h1fl, 3, filter_size=3, stride=1, scope='gen_flow')
+        out_flow_raw = conv2d(h1fl, 3, filter_size=3, stride=1, scope='gen_flow')
+        out_flow = tf.nn.tanh(out_flow_raw)
 
         '''Unet DECODER for FRAME'''
         h4fr = G_deconv_bn_dr_relu_concat(h5, None, [b_size, h//8, w//8, filters*4], filter_size, keep_prob, training=is_training, scope='gen_h4fr')
         h3fr = G_deconv_bn_dr_relu_concat(h4fr, None, [b_size, h//4, w//4, filters*4], filter_size, keep_prob, training=is_training, scope='gen_h3fr')
         h2fr = G_deconv_bn_dr_relu_concat(h3fr, None, [b_size, h//2, w//2, filters*2], filter_size, keep_prob, training=is_training, scope='gen_h2fr')
         h1fr = G_deconv_bn_dr_relu_concat(h2fr, None, [b_size, h, w, filters], filter_size, keep_prob, training=is_training, scope='gen_h1fr')
-        out_frame = conv2d(h1fr, input_data.get_shape()[-1], filter_size=3, stride=1, scope='gen_frame')
+        out_frame_raw = conv2d(h1fr, input_data.get_shape()[-1], filter_size=3, stride=1, scope='gen_frame')
+        out_frame = tf.nn.tanh(out_frame_raw)
         #
         if return_layers:
             return out_flow, out_frame, [h0, h1, h2, h3, h4, h5, h4fl, h3fl, h2fl, h1fl, h4fr, h3fr, h2fr, h1fr]
@@ -242,7 +244,8 @@ def Discriminator(frame_true, flow_hat, is_training, reuse=False, return_middle_
 
 
 def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch, dataset_name='', start_model_idx=0, batch_size=16,
-                                     val_images=None, val_flows=None, val_labels=None):
+                                     val_images=None, val_flows=None, val_labels=None,
+                                     lw_adv=0.25, lw_appe=1.0, lw_aux=2.0):
     wandb.init(
         project="mres-ICCV2019",
         name=f"{dataset_name}_flow_e{start_model_idx}-{max_epoch}",
@@ -253,6 +256,9 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
             "max_epoch": max_epoch,
             "dataset_name": dataset_name,
             "start_model_idx": start_model_idx,
+            "lw_adv":  lw_adv,
+            "lw_appe": lw_appe,
+            "lw_aux":  lw_aux,
             "optimizer": "Adam",
             "learning_rate_D": 0.00002,
             "learning_rate_G": 0.0002
@@ -312,7 +318,7 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
     D_loss = 0.5*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_real_logits, labels=tf.ones_like(D_real))) + \
              0.5*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_fake_logits, labels=tf.zeros_like(D_fake)))
     G_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_fake_logits, labels=tf.ones_like(D_fake)))
-    G_loss_total = 0.25*G_loss + loss_appe + 2*loss_opt
+    G_loss_total = lw_adv*G_loss + lw_appe*loss_appe + lw_aux*loss_opt
 
     # optimizers
     t_vars = tf.trainable_variables()
@@ -587,6 +593,38 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                         except ValueError as e:
                             print(f'  [VAL-AUC-PATCH] could not compute: {e}')
 
+                        # ── Per-disease one-vs-NOR AUC ───────────────────────
+                        _per_disease_aucs = {}
+                        for _disease in sorted(np.unique(labels_arr)):
+                            if _disease == 'NOR':
+                                continue
+                            _mask_d = (labels_arr == 'NOR') | (labels_arr == _disease)
+                            _bin_d  = (labels_arr[_mask_d] != 'NOR').astype(int)
+                            if np.any(_bin_d) and not np.all(_bin_d):
+                                try:
+                                    _auc_d_appe = roc_auc_score(_bin_d, per_sample_appe[_mask_d])
+                                    _auc_d_aux  = roc_auc_score(_bin_d, per_sample_opt[_mask_d])
+                                    _per_disease_aucs[_disease] = (_auc_d_appe, _auc_d_aux)
+                                    print('  [VAL-AUC-%s] appe = %.4f, flow = %.4f'
+                                          % (_disease, _auc_d_appe, _auc_d_aux))
+                                except ValueError:
+                                    pass
+
+                        # ── Optimal appearance weight search ──────────────────
+                        _best_auc, _best_w = 0.0, 0.2
+                        for _w in np.linspace(0.0, 1.0, 21):
+                            _score_try = (
+                                np.log(np.maximum(per_sample_opt, eps) / max(mu_opt, eps))
+                                + _w * np.log(np.maximum(per_sample_appe, eps) / max(mu_appe, eps))
+                            )
+                            try:
+                                _auc_try = roc_auc_score(binary_labels, _score_try)
+                                if _auc_try > _best_auc:
+                                    _best_auc, _best_w = _auc_try, float(_w)
+                            except ValueError:
+                                pass
+                        print('  [VAL-OPT-WEIGHT] best_w = %.2f, best_auc = %.4f' % (_best_w, _best_auc))
+
                 global_step = (i + 1) * len(batch_idx)
 
                 log_dict = {
@@ -604,6 +642,11 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                     log_dict["Val_AUC_Appe_Patch"]     = auc_appe_patch
                     log_dict["Val_AUC_Flow_Patch"]     = auc_opt_patch
                     log_dict["Val_AUC_Combined_Patch"] = auc_combined_patch
+                for _disease, (_auc_da, _auc_dx) in _per_disease_aucs.items():
+                    log_dict[f'Val_AUC_{_disease}_Appearance'] = _auc_da
+                    log_dict[f'Val_AUC_{_disease}_Flow']       = _auc_dx
+                log_dict['Val_AUC_BestCombined'] = _best_auc
+                log_dict['Val_BestWeight_Appe']  = _best_w
 
                 # ── Healthy vs Unhealthy combined charts ──────────────────
                 if not np.isnan(val_healthy_appe) and not np.isnan(val_unhealthy_appe):

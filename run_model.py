@@ -76,6 +76,12 @@ if __name__ == "__main__":
     parser.add_argument('--run_tag',     type=str, default=None,
                         help='Optional suffix appended to the checkpoint folder name '
                              'to distinguish re-runs (e.g. --run_tag v2).')
+    parser.add_argument('--lw_adv',  type=float, default=0.25,
+                        help='Loss weight for the adversarial term in G_loss_total.')
+    parser.add_argument('--lw_appe', type=float, default=1.0,
+                        help='Loss weight for the appearance reconstruction term.')
+    parser.add_argument('--lw_aux',  type=float, default=2.0,
+                        help='Loss weight for the auxiliary prediction term (flow or ED).')
 
     args = parser.parse_args()
 
@@ -211,7 +217,10 @@ if __name__ == "__main__":
             batch_size=16,
             val_images=val_p1,
             val_flows=val_p2,
-            val_labels=val_labels
+            val_labels=val_labels,
+            lw_adv=args.lw_adv,
+            lw_appe=args.lw_appe,
+            lw_aux=args.lw_aux,
         )
     else:
         GAN_tf_rgb.train_Unet_naive_with_batch_norm(
@@ -223,7 +232,10 @@ if __name__ == "__main__":
             batch_size=16,
             val_es_images=val_p1,
             val_ed_images=val_p2,
-            val_labels=val_labels
+            val_labels=val_labels,
+            lw_adv=args.lw_adv,
+            lw_appe=args.lw_appe,
+            lw_aux=args.lw_aux,
         )
 
     print(f"Training complete: {dataset_name}.")

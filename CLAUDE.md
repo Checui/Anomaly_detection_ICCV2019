@@ -72,35 +72,41 @@ Available datasets: `UCSDped2`, `Avenue`, `Belleview`, `Train`, `Exit`, `Entranc
 Both files share the same layer primitives (`conv2d`, `conv_transpose`, `conv2d_Inception`) and overall U-Net structure, built on the TF v1 graph API.
 
 **Generator** — shared Inception-style encoder (`h0`–`h5`), then two independent decoder heads:
-- **Auxiliary decoder** (with skip connections): predicts optical flow (`GAN_tf`) or the ED frame from ES (`GAN_tf_rgb`).
-- **Reconstruction decoder** (no skip connections): always reconstructs the input (ES) frame.
+- **Auxiliary decoder** (with skip connections from `h1`–`h4`): predicts optical flow (`GAN_tf`) or the ED frame from ES (`GAN_tf_rgb`). Final output bounded by `tanh`.
+- **Reconstruction decoder** (no skip connections): always reconstructs the input (ES) frame. Final output bounded by `tanh`. No skip connections force a full bottleneck pass, making reconstruction harder for out-of-distribution (anomalous) inputs.
+- Decoder blocks follow `deconv → BN → leaky_relu → dropout → concat_skip` ordering throughout.
 
 **Discriminator** — PatchGAN-style; takes `concat([frame_true, flow_hat], axis=-1)` as input.
 
-**Loss** — `G_loss_total = 0.25×G_adv + loss_appe + 2×loss_aux`
+**Loss** — `G_loss_total = lw_adv×G_adv + lw_appe×loss_appe + lw_aux×loss_aux`
 - `loss_appe`: MSE + gradient loss between reconstructed and input frame.
-- `loss_aux`: L1 loss between predicted auxiliary output and ground truth (flow or ED frame).
+- `loss_aux`: L1 loss between predicted flow and GT flow (`GAN_tf`); MSE + gradient loss between predicted ED and GT ED frame (`GAN_tf_rgb`).
+- Default weights: `lw_adv=0.25, lw_appe=1.0, lw_aux=2.0` (passed as kwargs to `train_Unet_naive_with_batch_norm`; exposed as `--lw_adv / --lw_appe / --lw_aux` in `run_model.py`).
 
-**Anomaly scoring at validation** — two parallel scoring pipelines run every validation epoch:
+**Anomaly scoring at validation** — three parallel scoring pipelines run every validation epoch:
 
-**Full-frame (non-patch):** per-sample `loss_appe` and `loss_aux` reduced over all spatial dims. Combined score:
+**Full-frame:** per-sample `loss_appe` and `loss_aux` reduced over all spatial dims. Combined score:
 ```
-combined = log(loss_appe / μ_appe) + 2 × log(loss_aux / μ_aux)
+combined = log(loss_aux / μ_aux) + 0.2 × log(loss_appe / μ_appe)
 ```
 Logged to W&B as `Val_AUC_Appearance`, `Val_AUC_Flow` / `Val_AUC_ED`, `Val_AUC_Combined`.
 
-**Patch-based (mirrors paper Section 3.5):** raw 2D MSE diff maps `[B, H, W]` are computed by reducing over channels only. `compute_patch_scores()` in `utils.py` wraps the existing `find_max_patch()` (16×16 patch, stride 4) to select the patch with highest mean flow/ED MSE per image, then reads appearance MSE at that same position. Combined score uses the paper formula:
+**Patch-based (paper Section 3.5):** raw 2D MSE diff maps `[B, H, W]` computed by reducing over channels only. `compute_patch_scores()` in `utils.py` wraps `find_max_patch()` (16×16 patch, stride 4) to select the patch with highest mean auxiliary MSE, then reads appearance MSE at that same position. Combined score:
 ```
 combined_patch = log(S_F(P̃) / μ_F) + 0.2 × log(S_I(P̃) / μ_I)
 ```
-where `P̃` is the worst-flow patch. Logged to W&B as `Val_AUC_Appe_Patch`, `Val_AUC_Flow_Patch` / `Val_AUC_ED_Patch`, `Val_AUC_Combined_Patch`. Printed as `[VAL-AUC-PATCH]`.
+Logged to W&B as `Val_AUC_Appe_Patch`, `Val_AUC_Flow_Patch` / `Val_AUC_ED_Patch`, `Val_AUC_Combined_Patch`. Printed as `[VAL-AUC-PATCH]`.
 
-In both pipelines, `μ_*` are the mean per-sample scores computed over the **entire training set in eval mode**, recomputed each validation epoch. Training baselines logged as `Train_Baseline_Appe` / `Train_Baseline_Opt` (`GAN_tf`) or `Train_Baseline_ED` (`GAN_tf_rgb`). Note: the training-set eval pass runs every validation epoch — roughly doubles validation wall time.
+**Per-disease one-vs-NOR AUC:** for each disease label (MINF, DCM, HCM, RV), computes AUC treating that disease vs NOR only. Logged as `Val_AUC_<DISEASE>_Appearance` and `Val_AUC_<DISEASE>_Flow` / `_ED`. Printed as `[VAL-AUC-<DISEASE>]`.
 
-**`GAN_tf_rgb.py` differences:**
+**Optimal weight search:** sweeps the appearance weight `w` in `log(aux/μ_aux) + w·log(appe/μ_appe)` over 21 points in [0, 1] using the current val set each epoch. Logs `Val_AUC_BestCombined` and `Val_BestWeight_Appe` — a ceiling reference for what the combined score can achieve with an optimally tuned weight. Printed as `[VAL-OPT-WEIGHT]`.
+
+In all pipelines, `μ_*` are the mean per-sample scores computed over the **entire training set in eval mode**, recomputed each validation epoch. Training baselines logged as `Train_Baseline_Appe` / `Train_Baseline_Opt` (`GAN_tf`) or `Train_Baseline_ED` (`GAN_tf_rgb`). Note: the training-set eval pass runs every validation epoch — roughly doubles validation wall time.
+
+**`GAN_tf_rgb.py` differences from `GAN_tf.py`:**
 - `augment_paired_batch()` applies random 90° rotations to (ES, ED) pairs during training.
 - Auxiliary target is `scaled_ed` (ED frame in `[-1, 1]`); the discriminator sees `[es_frame, pred_ed]`.
-- `loss_aux` is named `loss_ed`.
+- `loss_aux` is named `loss_ed`; W&B keys use `_ED` suffix instead of `_Flow`.
 
 ### Data Loaders
 
