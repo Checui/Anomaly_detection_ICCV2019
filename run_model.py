@@ -48,6 +48,15 @@ if __name__ == "__main__":
         help='Training datasets to load (space-separated). Choices: ACDC MM RECON.'
     )
     parser.add_argument(
+        '--val_datasets', type=str, nargs='+', default=['ACDC', 'MM'],
+        choices=['ACDC', 'MM'],
+        help=(
+            'Validation datasets to load (space-separated). Choices: ACDC MM. '
+            'Defaults to "ACDC MM" (combined). RECON is excluded — every RECON '
+            'subject is NOR, so it cannot supply positive samples for AUC.'
+        )
+    )
+    parser.add_argument(
         '--frame_mode', type=str, default='ed_es',
         choices=['ed_es', 'next_frame'],
         help=(
@@ -156,6 +165,7 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     val_mode_label = 'next_frame' if args.frame_mode == 'next_frame' else 'ED/ES'
     print(f"\n=== Loading Validation Data ({val_mode_label}) ===")
+    print(f"Validation datasets: {' '.join(args.val_datasets)}")
 
     if args.frame_mode == 'next_frame':
         if args.model_type == 'flow':
@@ -172,22 +182,29 @@ if __name__ == "__main__":
             _val_acdc = dl_rgb.load_acdc_test_val_ed_es_data
             _val_mm   = dl_rgb.load_mm_validation_ed_es_data
 
-    (acdc_val_p1, acdc_val_p2, acdc_val_labels, acdc_val_pids,
-     _, _, _, _) = _val_acdc(args.acdc_dir)
-    print(f"ACDC validation ({val_mode_label}): {len(acdc_val_p1)} samples")
+    val_parts_p1, val_parts_p2, val_labels = [], [], []
 
-    mm_val_p1, mm_val_p2, mm_val_labels, mm_val_pids = _val_mm(
-        args.mm_val_dir, args.mm_csv)
-    print(f"M&M validation ({val_mode_label}):  {len(mm_val_p1)} samples")
+    if 'ACDC' in args.val_datasets:
+        (acdc_val_p1, acdc_val_p2, acdc_val_labels, acdc_val_pids,
+         _, _, _, _) = _val_acdc(args.acdc_dir)
+        print(f"ACDC validation ({val_mode_label}): {len(acdc_val_p1)} samples")
+        if len(acdc_val_p1) > 0:
+            val_parts_p1.append(acdc_val_p1)
+            val_parts_p2.append(acdc_val_p2)
+            val_labels.extend(acdc_val_labels)
 
-    if len(acdc_val_p1) > 0 and len(mm_val_p1) > 0:
-        val_p1     = np.concatenate([acdc_val_p1, mm_val_p1], axis=0)
-        val_p2     = np.concatenate([acdc_val_p2, mm_val_p2], axis=0)
-        val_labels = acdc_val_labels + mm_val_labels
-    elif len(acdc_val_p1) > 0:
-        val_p1, val_p2, val_labels = acdc_val_p1, acdc_val_p2, acdc_val_labels
-    elif len(mm_val_p1) > 0:
-        val_p1, val_p2, val_labels = mm_val_p1, mm_val_p2, mm_val_labels
+    if 'MM' in args.val_datasets:
+        mm_val_p1, mm_val_p2, mm_val_labels, mm_val_pids = _val_mm(
+            args.mm_val_dir, args.mm_csv)
+        print(f"M&M validation ({val_mode_label}):  {len(mm_val_p1)} samples")
+        if len(mm_val_p1) > 0:
+            val_parts_p1.append(mm_val_p1)
+            val_parts_p2.append(mm_val_p2)
+            val_labels.extend(mm_val_labels)
+
+    if val_parts_p1:
+        val_p1 = np.concatenate(val_parts_p1, axis=0)
+        val_p2 = np.concatenate(val_parts_p2, axis=0)
     else:
         val_p1, val_p2, val_labels = None, None, None
 
