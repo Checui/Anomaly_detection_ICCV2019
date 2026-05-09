@@ -156,15 +156,12 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
                     continue
 
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-                frame_diff = np.mean(np.abs(next_gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0
-                if frame_diff < 0.01:
-                    continue
 
                 flow_3ch = np.dstack((flow, mag)) # (H, W, 3)
-                
-                all_images.append(processed_frames_arr[t]) 
+
+                all_images.append(processed_frames_arr[t])
                 all_flows.append(flow_3ch)
-                
+
     return np.array(all_images), np.array(all_flows)
 
 
@@ -270,9 +267,6 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
                     continue
 
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-                frame_diff = np.mean(np.abs(next_gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0
-                if frame_diff < 0.01:
-                    continue
 
                 flow_3ch = np.dstack((flow, mag))  # (H, W, 3)
 
@@ -782,10 +776,6 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
                     continue
 
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-                
-                frame_diff = np.mean(np.abs(next_gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0
-                if frame_diff < 0.01:
-                    continue
 
                 flow_3ch = np.dstack((flow, mag))
 
@@ -924,10 +914,6 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
                     continue
 
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-                
-                frame_diff = np.mean(np.abs(next_gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0
-                if frame_diff < 0.01:
-                    continue
 
                 flow_3ch = np.dstack((flow, mag))
 
@@ -1238,6 +1224,15 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
     return _to_array(all_images), _to_array(all_flows), all_labels, all_pids
 
 
+def load_mm_testing_ed_es_data(mm_test_dir, csv_path, target_size=(128, 128)):
+    """Load the M&M *Testing* set (ED/ES, all pathologies).
+
+    The Testing folder shares the same file layout and CSV schema as
+    Validation, so this is a thin wrapper around the validation loader.
+    """
+    return load_mm_validation_ed_es_data(mm_test_dir, csv_path, target_size)
+
+
 # ── Standalone per-dataset ED/ES training loaders ───────────────────────────
 #
 # load_acdc_ed_es_data  — ACDC NOR training subjects, ED/ES pairs only
@@ -1496,9 +1491,6 @@ def load_reconstructed_sax_data_next_frame(recon_root, target_size=(128, 128)):
                     continue
 
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-                frame_diff = np.mean(np.abs(next_gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0
-                if frame_diff < 0.001:
-                    continue
 
                 all_images.append(processed_frames[t])
                 all_flows.append(np.dstack((flow, mag)))

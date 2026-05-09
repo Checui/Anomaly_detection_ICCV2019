@@ -110,34 +110,24 @@ def crop_around_center(image, center_y, center_x, target_h=128, target_w=128):
 # 2. 4D SEQUENCE PROCESSORS (The core logic extracted)
 # =============================================================================
 
-def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128), motion_threshold=0.01):
-    """Extracts valid, moving (t, t+1) frame pairs from a 4D array."""
+def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128)):
+    """Extracts every (t, t+1) frame pair from a 4D array."""
     if img_arr.ndim != 4:
         return [], []
-        
+
     T, Z, _, _ = img_arr.shape
-    
-    # GET CENTERS FOR ALL Z-SLICES ONCE
-    #centers = get_slice_centers_from_mask(mask_arr)
     images, target_frames = [], []
 
     for z in range(1, Z - 1):
-        #cy, cx = centers[z] # Unpack the center
         slice_seq = img_arr[:, z, :, :]
         p1, p99 = np.percentile(slice_seq, 1), np.percentile(slice_seq, 99)
-        
-        # Pass cy and cx into the normalizer
-        #processed = [normalize_frame_to_rgb(slice_seq[t], p1, p99, cy, cx, target_size) for t in range(T)]
-        # Use aspect preserve resize
-        # Pass 0, 0 for center_y and center_x
+
         processed = [normalize_frame_to_rgb(slice_seq[t], p1, p99, 0, 0, target_size) for t in range(T)]
 
         for t in range(T - 1):
-            f1, f2 = processed[t], processed[t+1]
-            if np.mean(np.abs(f2 - f1)) >= motion_threshold:
-                images.append(f1)
-                target_frames.append(f2)
-                
+            images.append(processed[t])
+            target_frames.append(processed[t+1])
+
     return images, target_frames
 
 def extract_edes_pairs(img_arr,mask_arr, ed_idx, es_idx, target_size=(128, 128), motion_threshold=0.01):
@@ -202,25 +192,16 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
     for p in patients:
         p_dir = os.path.join(training_dir, p)
         info = read_acdc_info(os.path.join(p_dir, 'Info.cfg'))
-        
-        if info.get('Group', '') != 'NOR' or 'ED' not in info:
+
+        if info.get('Group', '') != 'NOR':
             continue
-            
+
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
-        # Find the ED mask filename to use as our center reference
-        ed_frame_str = str(info['ED']).zfill(2)
-        mask_path = os.path.join(p_dir, f'{p}_frame{ed_frame_str}_gt.nii.gz')
-        
-        if not os.path.exists(nii_path) or not os.path.exists(mask_path): 
+        if not os.path.exists(nii_path):
             continue
-            
+
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            # mask_arr = load_and_orient_sitk(mask_path) # Shape: (Z, H, W)
-            
-            # FIXED: Call consecutive pairs extractor, not ED/ES!
-            # imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
-            # resize
             imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
 
             all_images.extend(imgs)
@@ -241,24 +222,16 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
 
     for fname in sa_files:
         subject_id = fname.replace('_sa.nii.gz', '')
-        # FIXED: Use nor_ids, not nor_info!
-        if subject_id not in nor_ids: 
+        if subject_id not in nor_ids:
             continue
-        
+
         nii_path = os.path.join(mm_training_dir, fname)
-        mask_path = os.path.join(mm_training_dir, fname.replace('_sa.nii.gz', '_sa_gt.nii.gz'))
-        
-        if not os.path.exists(mask_path) or not os.path.exists(nii_path):
+        if not os.path.exists(nii_path):
             continue
-            
+
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            mask_arr = load_and_orient_sitk(mask_path) # Shape: (T, Z, H, W)
-            
-            # FIXED: Call consecutive pairs extractor!
-            # imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
-            # resize
-            imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size) 
+            imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
             all_images.extend(imgs)
             all_targets.extend(targets)
         except Exception as e:
@@ -381,24 +354,13 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
         p_dir = os.path.join(testing_dir, p)
         info = patient_info[p]
         group = info['Group']
-        
-        if 'ED' not in info:
-            continue
-            
+
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
-        ed_frame_str = str(info['ED']).zfill(2)
-        mask_path = os.path.join(p_dir, f'{p}_frame{ed_frame_str}_gt.nii.gz')
-        
-        if not os.path.exists(nii_path) or not os.path.exists(mask_path): 
+        if not os.path.exists(nii_path):
             continue
-            
+
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            # mask_arr = load_and_orient_sitk(mask_path)
-            
-            # FIXED: Call consecutive pairs extractor!
-            # imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
-            # resize
             imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
             labels = [group] * len(imgs)
             pids = [p] * len(imgs)
@@ -426,22 +388,15 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
     for fname in sa_files:
         subject_id = fname.replace('_sa.nii.gz', '')
         pathology = pathology_map.get(subject_id, 'UNKNOWN')
-        
+
         nii_path = os.path.join(mm_val_dir, fname)
-        mask_path = os.path.join(mm_val_dir, fname.replace('_sa.nii.gz', '_sa_gt.nii.gz'))
-        
-        if not os.path.exists(nii_path) or not os.path.exists(mask_path):
+        if not os.path.exists(nii_path):
             continue
-            
+
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            # mask_arr = load_and_orient_sitk(mask_path) 
-            
-            # FIXED: Call consecutive pairs extractor!
-            # imgs, targets = extract_consecutive_pairs(img_arr, mask_arr, target_size)
-            # resize
             imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
-            
+
             all_images.extend(imgs)
             all_targets.extend(targets)
             all_labels.extend([pathology] * len(imgs))
@@ -546,6 +501,84 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
             print(f"Error processing {subject_id}: {e}")
 
     return _to_array(all_images), _to_array(all_targets), all_labels, all_pids
+
+
+def load_mm_testing_ed_es_data(mm_test_dir, csv_path, target_size=(128, 128)):
+    """Load the M&M *Testing* set (ED/ES, all pathologies).
+
+    The Testing folder shares the same file layout and CSV schema as
+    Validation, so this is a thin wrapper around the validation loader.
+    """
+    return load_mm_validation_ed_es_data(mm_test_dir, csv_path, target_size)
+
+
+def load_acdc_nor_training_with_pids(acdc_dir, target_size=(128, 128)):
+    """Load ACDC NOR training subjects (ED/ES pairs) with per-sample patient IDs.
+
+    Same data as load_acdc_ed_es_data but additionally returns a list of
+    per-sample patient IDs aligned with the returned arrays — useful for
+    per-patient or per-vendor analyses on the training distribution.
+    """
+    training_dir = os.path.join(acdc_dir, 'database', 'training')
+    if not os.path.isdir(training_dir):
+        training_dir = os.path.join(acdc_dir, 'database', 'training_test')
+
+    patients = sorted([d for d in os.listdir(training_dir)
+                       if os.path.isdir(os.path.join(training_dir, d))])
+    images, targets, pids = [], [], []
+
+    for p in patients:
+        p_dir = os.path.join(training_dir, p)
+        info  = read_acdc_info(os.path.join(p_dir, 'Info.cfg'))
+        if info.get('Group', '') != 'NOR' or 'ED' not in info or 'ES' not in info:
+            continue
+        nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
+        if not os.path.exists(nii_path):
+            continue
+        try:
+            img_arr = load_and_orient_sitk(nii_path)
+            imgs, tgts = extract_edes_pairs(
+                img_arr, 0, int(info['ED']) - 1, int(info['ES']) - 1, target_size)
+            images.extend(imgs)
+            targets.extend(tgts)
+            pids.extend([p] * len(imgs))
+        except Exception as e:
+            print(f"Error processing ACDC {p}: {e}")
+
+    print(f"ACDC NOR ED/ES samples: {len(images)} from {len(set(pids))} patients")
+    return _to_array(images), _to_array(targets), pids
+
+
+def load_mm_nor_training_with_pids(mm_training_dir, csv_path, target_size=(128, 128)):
+    """Load M&M NOR training subjects (ED/ES pairs) with per-sample patient IDs."""
+    df = pd.read_csv(csv_path)
+    nor_rows = df[df['Pathology'] == 'NOR'][['External code', 'ED', 'ES']]
+    nor_info = {row['External code']: (int(row['ED']), int(row['ES']))
+                for _, row in nor_rows.iterrows()}
+
+    images, targets, pids = [], [], []
+    sa_files = sorted([f for f in os.listdir(mm_training_dir)
+                       if f.endswith('_sa.nii.gz') and not f.endswith('_gt.nii.gz')])
+
+    for fname in sa_files:
+        sid = fname.replace('_sa.nii.gz', '')
+        if sid not in nor_info:
+            continue
+        nii_path = os.path.join(mm_training_dir, fname)
+        if not os.path.exists(nii_path):
+            continue
+        try:
+            ed_idx, es_idx = nor_info[sid]
+            img_arr = load_and_orient_sitk(nii_path)
+            imgs, tgts = extract_edes_pairs(img_arr, 0, ed_idx, es_idx, target_size)
+            images.extend(imgs)
+            targets.extend(tgts)
+            pids.extend([sid] * len(imgs))
+        except Exception as e:
+            print(f"Error processing M&M {sid}: {e}")
+
+    print(f"M&M NOR ED/ES samples: {len(images)} from {len(set(pids))} patients")
+    return _to_array(images), _to_array(targets), pids
 
 
 def load_reconstructed_sax_data_rgb(recon_root, ed_es_csv, target_size=(128, 128), motion_threshold=0.001):
@@ -685,8 +718,7 @@ def load_mm_ed_es_data(mm_training_dir, csv_path, target_size=(128, 128)):
 
 # ── Reconstructed SAX next-frame loader (RGB) ────────────────────────────────
 
-def load_reconstructed_sax_data_next_frame_rgb(recon_root, target_size=(128, 128),
-                                                motion_threshold=0.001):
+def load_reconstructed_sax_data_next_frame_rgb(recon_root, target_size=(128, 128)):
     """Load all consecutive frame pairs from reconstructed SAX volumes (RGB pipeline).
 
     Unlike load_reconstructed_sax_data_rgb (ED/ES only), this iterates every
@@ -694,9 +726,8 @@ def load_reconstructed_sax_data_next_frame_rgb(recon_root, target_size=(128, 128
 
     Parameters
     ----------
-    recon_root       : str    Directory containing *_sax_recon.npy files.
-    target_size      : tuple  (H, W) resize target, default (128, 128).
-    motion_threshold : float  Minimum mean pixel difference to keep a pair.
+    recon_root  : str    Directory containing *_sax_recon.npy files.
+    target_size : tuple  (H, W) resize target, default (128, 128).
 
     Returns
     -------
@@ -721,8 +752,7 @@ def load_reconstructed_sax_data_next_frame_rgb(recon_root, target_size=(128, 128
         cine_cropped = cine[:, :, y0:y0 + side, x0:x0 + side].astype(np.float32)
 
         print(f"Recon {case_id}  T={T}  Z={Z}")
-        imgs, targets = extract_consecutive_pairs(
-            cine_cropped, 0, target_size, motion_threshold)
+        imgs, targets = extract_consecutive_pairs(cine_cropped, 0, target_size)
         all_images.extend(imgs)
         all_targets.extend(targets)
 
