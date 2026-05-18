@@ -641,15 +641,17 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
 
     Returns
     -------
-    val_images   : np.ndarray  shape (N_val, H, W, 3)
-    val_flows    : np.ndarray  shape (N_val, H, W, 3)
-    val_labels   : list[str]   per-sample disease group label
-    val_pids     : list[str]   per-sample patient ID
+    val_images       : np.ndarray  shape (N_val, H, W, 3)
+    val_flows        : np.ndarray  shape (N_val, H, W, 3)
+    val_labels       : list[str]   per-sample disease group label
+    val_pids         : list[str]   per-sample patient ID
+    val_slice_idxs   : list[int]   per-sample z-slice index
 
-    test_images  : np.ndarray  shape (N_test, H, W, 3)
-    test_flows   : np.ndarray  shape (N_test, H, W, 3)
-    test_labels  : list[str]   per-sample disease group label
-    test_pids    : list[str]   per-sample patient ID
+    test_images      : np.ndarray  shape (N_test, H, W, 3)
+    test_flows       : np.ndarray  shape (N_test, H, W, 3)
+    test_labels      : list[str]   per-sample disease group label
+    test_pids        : list[str]   per-sample patient ID
+    test_slice_idxs  : list[int]   per-sample z-slice index
     """
     import random
 
@@ -719,24 +721,24 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
 
     # ── 3. Processing helper (same logic as load_acdc_data) ────────────────
     def _process_patient(p, p_dir, group):
-        """Return (images, flows, labels, pids) lists for one patient."""
+        """Return (images, flows, labels, pids, slice_idxs) lists for one patient."""
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
         if not os.path.exists(nii_path):
-            return [], [], [], []
+            return [], [], [], [], []
 
         try:
             img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
         except Exception as e:
             print(f"Error loading {p}: {e}")
-            return [], [], [], []
+            return [], [], [], [], []
 
         if img_arr.ndim != 4:
             print(f"Skipping {p}: shape {img_arr.shape} is not 4D")
-            return [], [], [], []
+            return [], [], [], [], []
 
         T, Z, H, W = img_arr.shape
 
-        images, flows, labels, pids = [], [], [], []
+        images, flows, labels, pids, slice_idxs = [], [], [], [], []
 
         for z in range(1, Z - 1):
             slice_seq = img_arr[:, z, :, :]  # (T, H, W)
@@ -783,30 +785,33 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
                 flows.append(flow_3ch)
                 labels.append(group)
                 pids.append(p)
+                slice_idxs.append(z)
 
-        return images, flows, labels, pids
+        return images, flows, labels, pids, slice_idxs
 
     # ── 4. Load and process each split ─────────────────────────────────────
-    val_images,  val_flows,  val_labels,  val_pids  = [], [], [], []
-    test_images, test_flows, test_labels, test_pids = [], [], [], []
+    val_images,  val_flows,  val_labels,  val_pids,  val_slice_idxs  = [], [], [], [], []
+    test_images, test_flows, test_labels, test_pids, test_slice_idxs = [], [], [], [], []
 
     for p in sorted(val_patient_set | test_patient_set):
         p_dir = os.path.join(testing_dir, p)
         group = patient_info[p]['Group']
         print(f"Processing {p} ({group})...")
 
-        imgs, fls, lbls, pds = _process_patient(p, p_dir, group)
+        imgs, fls, lbls, pds, slcs = _process_patient(p, p_dir, group)
 
         if p in val_patient_set:
             val_images.extend(imgs)
             val_flows.extend(fls)
             val_labels.extend(lbls)
             val_pids.extend(pds)
+            val_slice_idxs.extend(slcs)
         else:
             test_images.extend(imgs)
             test_flows.extend(fls)
             test_labels.extend(lbls)
             test_pids.extend(pds)
+            test_slice_idxs.extend(slcs)
 
     print(f"\n{'='*50}")
     print(f"Validation: {len(val_images)} samples from {len(val_patient_set)} patients")
@@ -815,8 +820,8 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
     def _to_array(lst):
         return np.array(lst) if len(lst) > 0 else np.array([])
 
-    return (_to_array(val_images),  _to_array(val_flows),  val_labels,  val_pids,
-            _to_array(test_images), _to_array(test_flows), test_labels, test_pids)
+    return (_to_array(val_images),  _to_array(val_flows),  val_labels,  val_pids,  val_slice_idxs,
+            _to_array(test_images), _to_array(test_flows), test_labels, test_pids, test_slice_idxs)
 
 
 # ── M&M Validation loader (ALL pathologies) ─────────────────────────────────
@@ -838,19 +843,21 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
     Returns
     -------
-    all_images : np.ndarray   shape (N, H, W, 3)
-    all_flows  : np.ndarray   shape (N, H, W, 3)
-    all_labels : list[str]    per-sample pathology label
-    all_pids   : list[str]    per-sample subject ID
+    all_images     : np.ndarray   shape (N, H, W, 3)
+    all_flows      : np.ndarray   shape (N, H, W, 3)
+    all_labels     : list[str]    per-sample pathology label
+    all_pids       : list[str]    per-sample subject ID
+    all_slice_idxs : list[int]    per-sample z-slice index
     """
     # Build lookup: subject_id -> pathology
     df = pd.read_csv(csv_path)
     pathology_map = dict(zip(df['External code'], df['Pathology']))
 
-    all_images = []
-    all_flows  = []
-    all_labels = []
-    all_pids   = []
+    all_images     = []
+    all_flows      = []
+    all_labels     = []
+    all_pids       = []
+    all_slice_idxs = []
 
     sa_files = sorted([
         f for f in os.listdir(mm_val_dir)
@@ -921,13 +928,14 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
                 all_flows.append(flow_3ch)
                 all_labels.append(pathology)
                 all_pids.append(subject_id)
+                all_slice_idxs.append(z)
 
     print(f"M&M Validation total: {len(all_images)} samples from {len(sa_files)} subjects")
 
     def _to_array(lst):
         return np.array(lst) if len(lst) > 0 else np.array([])
 
-    return _to_array(all_images), _to_array(all_flows), all_labels, all_pids
+    return _to_array(all_images), _to_array(all_flows), all_labels, all_pids, all_slice_idxs
 
 
 # ── ACDC test-set loader: ED/ES only, with val / test split ─────────────────
@@ -948,8 +956,8 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
 
     Returns
     -------
-    val_images, val_flows, val_labels, val_pids,
-    test_images, test_flows, test_labels, test_pids
+    val_images, val_flows, val_labels, val_pids, val_slice_idxs,
+    test_images, test_flows, test_labels, test_pids, test_slice_idxs
     """
     import random
 
@@ -1024,28 +1032,28 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
             es_idx = int(info['ES']) - 1
         except (KeyError, ValueError) as e:
             print(f"Missing ED/ES in {p}: {e}")
-            return [], [], [], []
+            return [], [], [], [], []
         if ed_idx == es_idx:
             print(f"Skipping {p}: ED and ES identical ({ed_idx})")
-            return [], [], [], []
+            return [], [], [], [], []
 
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
         if not os.path.exists(nii_path):
-            return [], [], [], []
+            return [], [], [], [], []
 
         try:
             img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
         except Exception as e:
             print(f"Error loading {p}: {e}")
-            return [], [], [], []
+            return [], [], [], [], []
         if img_arr.ndim != 4:
-            return [], [], [], []
+            return [], [], [], [], []
         T, Z, _, _ = img_arr.shape
         if es_idx >= T or ed_idx >= T:
             print(f"Skipping {p}: ED={ed_idx} or ES={es_idx} out of range T={T}")
-            return [], [], [], []
+            return [], [], [], [], []
 
-        images, flows, labels, pids = [], [], [], []
+        images, flows, labels, pids, slice_idxs = [], [], [], [], []
         print(f"  {p} ({group})  ED={ed_idx}  ES={es_idx}")
 
         for z in range(1, Z - 1):
@@ -1078,24 +1086,27 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
             flows.append(flow_3ch)
             labels.append(group)
             pids.append(p)
+            slice_idxs.append(z)
 
-        return images, flows, labels, pids
+        return images, flows, labels, pids, slice_idxs
 
     # ── 4. Load each split ─────────────────────────────────────────────────
-    val_images,  val_flows,  val_labels,  val_pids  = [], [], [], []
-    test_images, test_flows, test_labels, test_pids = [], [], [], []
+    val_images,  val_flows,  val_labels,  val_pids,  val_slice_idxs  = [], [], [], [], []
+    test_images, test_flows, test_labels, test_pids, test_slice_idxs = [], [], [], [], []
 
     for p in sorted(val_patient_set | test_patient_set):
         p_dir = os.path.join(testing_dir, p)
         group = patient_info[p]['Group']
-        imgs, fls, lbls, pds = _process_patient_ed_es(p, p_dir, group)
+        imgs, fls, lbls, pds, slcs = _process_patient_ed_es(p, p_dir, group)
 
         if p in val_patient_set:
             val_images.extend(imgs);  val_flows.extend(fls)
             val_labels.extend(lbls);  val_pids.extend(pds)
+            val_slice_idxs.extend(slcs)
         else:
             test_images.extend(imgs); test_flows.extend(fls)
             test_labels.extend(lbls); test_pids.extend(pds)
+            test_slice_idxs.extend(slcs)
 
     print(f"\nValidation: {len(val_images)} ED/ES samples from {len(val_patient_set)} patients")
     print(f"Test:       {len(test_images)} ED/ES samples from {len(test_patient_set)} patients")
@@ -1103,8 +1114,8 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
     def _to_array(lst):
         return np.array(lst) if len(lst) > 0 else np.array([])
 
-    return (_to_array(val_images),  _to_array(val_flows),  val_labels,  val_pids,
-            _to_array(test_images), _to_array(test_flows), test_labels, test_pids)
+    return (_to_array(val_images),  _to_array(val_flows),  val_labels,  val_pids,  val_slice_idxs,
+            _to_array(test_images), _to_array(test_flows), test_labels, test_pids, test_slice_idxs)
 
 
 # ── M&M Validation loader: ED/ES only, ALL pathologies ──────────────────────
@@ -1125,10 +1136,11 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
     Returns
     -------
-    all_images : np.ndarray   shape (N, H, W, 3)   – ES frames
-    all_flows  : np.ndarray   shape (N, H, W, 3)   – optical flow ES→ED
-    all_labels : list[str]    per-sample pathology label
-    all_pids   : list[str]    per-sample subject ID
+    all_images     : np.ndarray   shape (N, H, W, 3)   – ES frames
+    all_flows      : np.ndarray   shape (N, H, W, 3)   – optical flow ES→ED
+    all_labels     : list[str]    per-sample pathology label
+    all_pids       : list[str]    per-sample subject ID
+    all_slice_idxs : list[int]    per-sample z-slice index
     """
     def _preprocess_frame(frame, p1, p99, target_size):
         frame_cropped = aspect_preserve_resize(
@@ -1148,7 +1160,7 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
         sid = row['External code']
         subject_lookup[sid] = (int(row['ED']), int(row['ES']), row['Pathology'])
 
-    all_images, all_flows, all_labels, all_pids = [], [], [], []
+    all_images, all_flows, all_labels, all_pids, all_slice_idxs = [], [], [], [], []
 
     sa_files = sorted([
         f for f in os.listdir(mm_val_dir)
@@ -1215,13 +1227,14 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
             all_flows.append(flow_3ch)
             all_labels.append(pathology)
             all_pids.append(subject_id)
+            all_slice_idxs.append(z)
 
     print(f"M&M Validation ED/ES total: {len(all_images)} samples from {len(sa_files)} subjects")
 
     def _to_array(lst):
         return np.array(lst) if len(lst) > 0 else np.array([])
 
-    return _to_array(all_images), _to_array(all_flows), all_labels, all_pids
+    return _to_array(all_images), _to_array(all_flows), all_labels, all_pids, all_slice_idxs
 
 
 def load_mm_testing_ed_es_data(mm_test_dir, csv_path, target_size=(128, 128)):

@@ -135,7 +135,7 @@ In all pipelines, `μ_*` are the mean per-sample scores computed over the **enti
 - Static slices discarded: `mean(flow_mag) < 0.05` or `max(flow_mag) < 0.5` (flow pipeline); `mean(|f2 - f1|) < 0.01` (RGB pipeline); threshold is `0.001` for RECON volumes (raw intensities ~1e-5).
 - The GAN receives frames in `[-1, 1]` — scaling is applied inside the TF graph (`(x / 0.5) − 1`), not in the loaders.
 
-**Validation split (ACDC test set, fixed seed 42):** 4 NOR + 2 per disease (MINF, DCM, HCM, RV) = 12 patients for validation; remaining 38 for test.
+**Validation split (ACDC test set):** `run_model.py` uses the **entire** 50-patient ACDC test set for validation (the previous 12-patient subset was not representative enough). The loader functions (`load_acdc_test_val_data`, `load_acdc_test_val_ed_es_data`) still perform the seed-42 12 / 38 patient split internally for reproducibility, but `run_model.py` concatenates both halves before passing them to the trainer.
 
 ### Dataset Paths
 Datasets are expected one directory level up (`../Dataset_1`, `../Dataset_2`). Reconstructed SAX volumes are at the workspace root (`../reconstructed_sax_images_training_2023/`). Video surveillance datasets go in `../dataset/`.

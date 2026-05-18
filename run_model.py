@@ -182,31 +182,50 @@ if __name__ == "__main__":
             _val_acdc = dl_rgb.load_acdc_test_val_ed_es_data
             _val_mm   = dl_rgb.load_mm_validation_ed_es_data
 
-    val_parts_p1, val_parts_p2, val_labels = [], [], []
+    val_parts_p1, val_parts_p2, val_labels, val_pids, val_slice_idxs = [], [], [], [], []
 
     if 'ACDC' in args.val_datasets:
-        (acdc_val_p1, acdc_val_p2, acdc_val_labels, acdc_val_pids,
-         _, _, _, _) = _val_acdc(args.acdc_dir)
-        print(f"ACDC validation ({val_mode_label}): {len(acdc_val_p1)} samples")
+        # Use the ENTIRE ACDC test set (all 50 patients) for validation —
+        # the original 12-patient val split was not representative enough.
+        # The loader still returns the same val/test split for reproducibility;
+        # here we simply concatenate both halves into one validation set.
+        (acdc_val_p1, acdc_val_p2, acdc_val_labels, acdc_val_pids, acdc_val_slcs,
+         acdc_test_p1, acdc_test_p2, acdc_test_labels, acdc_test_pids, acdc_test_slcs
+         ) = _val_acdc(args.acdc_dir)
+        if len(acdc_test_p1) > 0:
+            acdc_val_p1 = np.concatenate([acdc_val_p1, acdc_test_p1], axis=0)
+            acdc_val_p2 = np.concatenate([acdc_val_p2, acdc_test_p2], axis=0)
+            acdc_val_labels = list(acdc_val_labels) + list(acdc_test_labels)
+            acdc_val_pids   = list(acdc_val_pids)   + list(acdc_test_pids)
+            acdc_val_slcs   = list(acdc_val_slcs)   + list(acdc_test_slcs)
+        # Disambiguate ACDC vs M&M pids that might collide
+        acdc_val_pids = [f"ACDC_{pid}" for pid in acdc_val_pids]
+        print(f"ACDC validation ({val_mode_label}): {len(acdc_val_p1)} samples "
+              f"from {len(set(acdc_val_pids))} patients (full test set)")
         if len(acdc_val_p1) > 0:
             val_parts_p1.append(acdc_val_p1)
             val_parts_p2.append(acdc_val_p2)
             val_labels.extend(acdc_val_labels)
+            val_pids.extend(acdc_val_pids)
+            val_slice_idxs.extend(acdc_val_slcs)
 
     if 'MM' in args.val_datasets:
-        mm_val_p1, mm_val_p2, mm_val_labels, mm_val_pids = _val_mm(
+        mm_val_p1, mm_val_p2, mm_val_labels, mm_val_pids, mm_val_slcs = _val_mm(
             args.mm_val_dir, args.mm_csv)
+        mm_val_pids = [f"MM_{pid}" for pid in mm_val_pids]
         print(f"M&M validation ({val_mode_label}):  {len(mm_val_p1)} samples")
         if len(mm_val_p1) > 0:
             val_parts_p1.append(mm_val_p1)
             val_parts_p2.append(mm_val_p2)
             val_labels.extend(mm_val_labels)
+            val_pids.extend(mm_val_pids)
+            val_slice_idxs.extend(mm_val_slcs)
 
     if val_parts_p1:
         val_p1 = np.concatenate(val_parts_p1, axis=0)
         val_p2 = np.concatenate(val_parts_p2, axis=0)
     else:
-        val_p1, val_p2, val_labels = None, None, None
+        val_p1, val_p2, val_labels, val_pids, val_slice_idxs = None, None, None, None, None
 
     if val_p1 is not None:
         from collections import Counter
@@ -235,6 +254,8 @@ if __name__ == "__main__":
             val_images=val_p1,
             val_flows=val_p2,
             val_labels=val_labels,
+            val_pids=val_pids,
+            val_slice_idxs=val_slice_idxs,
             lw_adv=args.lw_adv,
             lw_appe=args.lw_appe,
             lw_aux=args.lw_aux,
@@ -250,6 +271,8 @@ if __name__ == "__main__":
             val_es_images=val_p1,
             val_ed_images=val_p2,
             val_labels=val_labels,
+            val_pids=val_pids,
+            val_slice_idxs=val_slice_idxs,
             lw_adv=args.lw_adv,
             lw_appe=args.lw_appe,
             lw_aux=args.lw_aux,

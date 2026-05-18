@@ -110,13 +110,16 @@ def crop_around_center(image, center_y, center_x, target_h=128, target_w=128):
 # 2. 4D SEQUENCE PROCESSORS (The core logic extracted)
 # =============================================================================
 
-def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128)):
-    """Extracts every (t, t+1) frame pair from a 4D array."""
+def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128), return_slice_idxs=False):
+    """Extracts every (t, t+1) frame pair from a 4D array.
+
+    If return_slice_idxs is True, also returns a list of per-sample z indices.
+    """
     if img_arr.ndim != 4:
-        return [], []
+        return ([], [], []) if return_slice_idxs else ([], [])
 
     T, Z, _, _ = img_arr.shape
-    images, target_frames = [], []
+    images, target_frames, slice_idxs = [], [], []
 
     for z in range(1, Z - 1):
         slice_seq = img_arr[:, z, :, :]
@@ -127,38 +130,44 @@ def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128)):
         for t in range(T - 1):
             images.append(processed[t])
             target_frames.append(processed[t+1])
+            slice_idxs.append(z)
 
+    if return_slice_idxs:
+        return images, target_frames, slice_idxs
     return images, target_frames
 
-def extract_edes_pairs(img_arr,mask_arr, ed_idx, es_idx, target_size=(128, 128), motion_threshold=0.01):
+def extract_edes_pairs(img_arr,mask_arr, ed_idx, es_idx, target_size=(128, 128), motion_threshold=0.01, return_slice_idxs=False):
     if img_arr.ndim != 4:
-        return [], []
-        
+        return ([], [], []) if return_slice_idxs else ([], [])
+
     T, Z, _, _ = img_arr.shape
     if max(ed_idx, es_idx) >= T or ed_idx == es_idx:
-        return [], []
-        
+        return ([], [], []) if return_slice_idxs else ([], [])
+
     # GET CENTERS FOR ALL Z-SLICES ONCE
     # centers = get_slice_centers_from_mask(mask_arr)
-    images, target_frames = [], []
+    images, target_frames, slice_idxs = [], [], []
 
     for z in range(1, Z - 1):
         # cy, cx = centers[z] # Unpack the center for this specific slice
 
         slice_seq = img_arr[:, z, :, :]
         p1, p99 = np.percentile(slice_seq, 1), np.percentile(slice_seq, 99)
-        
+
         # Pass cy and cx into the normalizer
         # es_rgb = normalize_frame_to_rgb(slice_seq[es_idx], p1, p99, cy, cx, target_size)
         # ed_rgb = normalize_frame_to_rgb(slice_seq[ed_idx], p1, p99, cy, cx, target_size)
         # resize
         es_rgb = normalize_frame_to_rgb(slice_seq[es_idx], p1, p99, 0, 0, target_size)
         ed_rgb = normalize_frame_to_rgb(slice_seq[ed_idx], p1, p99, 0, 0, target_size)
-        
+
         if np.mean(np.abs(ed_rgb - es_rgb)) >= motion_threshold:
             images.append(es_rgb)
             target_frames.append(ed_rgb)
-            
+            slice_idxs.append(z)
+
+    if return_slice_idxs:
+        return images, target_frames, slice_idxs
     return images, target_frames
 
 def read_acdc_info(cfg_path):
@@ -347,8 +356,8 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
         val_set.update(shuffled[:n_val])
         test_set.update(shuffled[n_val:])
 
-    val_imgs, val_targets, val_lbls, val_pids = [], [], [], []
-    test_imgs, test_targets, test_lbls, test_pids = [], [], [], []
+    val_imgs, val_targets, val_lbls, val_pids, val_slice_idxs = [], [], [], [], []
+    test_imgs, test_targets, test_lbls, test_pids, test_slice_idxs = [], [], [], [], []
 
     for p in sorted(val_set | test_set):
         p_dir = os.path.join(testing_dir, p)
@@ -361,28 +370,30 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
 
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
+            imgs, targets, slcs = extract_consecutive_pairs(img_arr, 0, target_size, return_slice_idxs=True)
             labels = [group] * len(imgs)
             pids = [p] * len(imgs)
-            
+
             if p in val_set:
                 val_imgs.extend(imgs); val_targets.extend(targets)
                 val_lbls.extend(labels); val_pids.extend(pids)
+                val_slice_idxs.extend(slcs)
             else:
                 test_imgs.extend(imgs); test_targets.extend(targets)
                 test_lbls.extend(labels); test_pids.extend(pids)
+                test_slice_idxs.extend(slcs)
         except Exception as e:
             print(f"Error processing {p}: {e}")
 
-    return (_to_array(val_imgs), _to_array(val_targets), val_lbls, val_pids,
-            _to_array(test_imgs), _to_array(test_targets), test_lbls, test_pids)
+    return (_to_array(val_imgs), _to_array(val_targets), val_lbls, val_pids, val_slice_idxs,
+            _to_array(test_imgs), _to_array(test_targets), test_lbls, test_pids, test_slice_idxs)
 
 
 def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
     df = pd.read_csv(csv_path)
     pathology_map = dict(zip(df['External code'], df['Pathology']))
-    
-    all_images, all_targets, all_labels, all_pids = [], [], [], []
+
+    all_images, all_targets, all_labels, all_pids, all_slice_idxs = [], [], [], [], []
     sa_files = sorted([f for f in os.listdir(mm_val_dir) if f.endswith('_sa.nii.gz') and not f.endswith('_gt.nii.gz')])
 
     for fname in sa_files:
@@ -395,16 +406,17 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
+            imgs, targets, slcs = extract_consecutive_pairs(img_arr, 0, target_size, return_slice_idxs=True)
 
             all_images.extend(imgs)
             all_targets.extend(targets)
             all_labels.extend([pathology] * len(imgs))
             all_pids.extend([subject_id] * len(imgs))
+            all_slice_idxs.extend(slcs)
         except Exception as e:
             print(f"Error loading {subject_id}: {e}")
 
-    return _to_array(all_images), _to_array(all_targets), all_labels, all_pids
+    return _to_array(all_images), _to_array(all_targets), all_labels, all_pids, all_slice_idxs
 
 
 def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
@@ -429,21 +441,21 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
         val_set.update(shuffled[:n_val])
         test_set.update(shuffled[n_val:])
 
-    val_imgs, val_targets, val_lbls, val_pids = [], [], [], []
-    test_imgs, test_targets, test_lbls, test_pids = [], [], [], []
+    val_imgs, val_targets, val_lbls, val_pids, val_slice_idxs = [], [], [], [], []
+    test_imgs, test_targets, test_lbls, test_pids, test_slice_idxs = [], [], [], [], []
 
     for p in sorted(val_set | test_set):
         p_dir = os.path.join(testing_dir, p)
         info = patient_info[p]
         if 'ED' not in info or 'ES' not in info: continue
-            
+
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
         ed_frame_str = str(info['ED']).zfill(2)
         mask_path = os.path.join(p_dir, f'{p}_frame{ed_frame_str}_gt.nii.gz')
-        
-        if not os.path.exists(nii_path) or not os.path.exists(mask_path): 
+
+        if not os.path.exists(nii_path) or not os.path.exists(mask_path):
             continue
-            
+
         try:
             img_arr = load_and_orient_sitk(nii_path)
             # mask_arr = load_and_orient_sitk(mask_path)
@@ -451,38 +463,41 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
             # imgs, targets = extract_edes_pairs(img_arr, mask_arr, int(info['ED']), int(info['ES']), target_size)
             # resize
             # ACDC Info.cfg uses 1-based frame indices; subtract 1 for 0-based numpy indexing
-            imgs, targets = extract_edes_pairs(img_arr, 0, int(info['ED']) - 1, int(info['ES']) - 1, target_size)
+            imgs, targets, slcs = extract_edes_pairs(
+                img_arr, 0, int(info['ED']) - 1, int(info['ES']) - 1, target_size, return_slice_idxs=True)
             labels, pids = [info['Group']] * len(imgs), [p] * len(imgs)
-            
+
             if p in val_set:
                 val_imgs.extend(imgs); val_targets.extend(targets)
                 val_lbls.extend(labels); val_pids.extend(pids)
+                val_slice_idxs.extend(slcs)
             else:
                 test_imgs.extend(imgs); test_targets.extend(targets)
                 test_lbls.extend(labels); test_pids.extend(pids)
+                test_slice_idxs.extend(slcs)
         except Exception as e:
             print(f"Error processing {p}: {e}")
 
-    return (_to_array(val_imgs), _to_array(val_targets), val_lbls, val_pids,
-            _to_array(test_imgs), _to_array(test_targets), test_lbls, test_pids)
+    return (_to_array(val_imgs), _to_array(val_targets), val_lbls, val_pids, val_slice_idxs,
+            _to_array(test_imgs), _to_array(test_targets), test_lbls, test_pids, test_slice_idxs)
 
 
 def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
     df = pd.read_csv(csv_path)
     subject_lookup = {row['External code']: (int(row['ED']), int(row['ES']), row['Pathology']) for _, row in df.iterrows()}
-    
-    all_images, all_targets, all_labels, all_pids = [], [], [], []
+
+    all_images, all_targets, all_labels, all_pids, all_slice_idxs = [], [], [], [], []
     sa_files = sorted([f for f in os.listdir(mm_val_dir) if f.endswith('_sa.nii.gz') and not f.endswith('_gt.nii.gz')])
 
     for fname in sa_files:
         subject_id = fname.replace('_sa.nii.gz', '')
         if subject_id not in subject_lookup: continue
-            
+
         ed_idx, es_idx, pathology = subject_lookup[subject_id]
         nii_path = os.path.join(mm_val_dir, fname)
         mask_path = os.path.join(mm_val_dir, fname.replace('_sa.nii.gz', '_sa_gt.nii.gz'))
-        
-        if not os.path.exists(nii_path) or not os.path.exists(mask_path): 
+
+        if not os.path.exists(nii_path) or not os.path.exists(mask_path):
             continue
 
         try:
@@ -491,16 +506,17 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
             # FIXED: Pass mask_arr into the extractor!
             # imgs, targets = extract_edes_pairs(img_arr, mask_arr, ed_idx, es_idx, target_size)
             # resize
-            imgs, targets = extract_edes_pairs(img_arr, 0, ed_idx, es_idx, target_size)
-            
+            imgs, targets, slcs = extract_edes_pairs(img_arr, 0, ed_idx, es_idx, target_size, return_slice_idxs=True)
+
             all_images.extend(imgs)
             all_targets.extend(targets)
             all_labels.extend([pathology] * len(imgs))
             all_pids.extend([subject_id] * len(imgs))
+            all_slice_idxs.extend(slcs)
         except Exception as e:
             print(f"Error processing {subject_id}: {e}")
 
-    return _to_array(all_images), _to_array(all_targets), all_labels, all_pids
+    return _to_array(all_images), _to_array(all_targets), all_labels, all_pids, all_slice_idxs
 
 
 def load_mm_testing_ed_es_data(mm_test_dir, csv_path, target_size=(128, 128)):

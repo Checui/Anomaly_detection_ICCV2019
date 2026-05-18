@@ -1,5 +1,6 @@
 from __future__ import print_function, division
 import os
+import json
 import pathlib
 import matplotlib.colors as mcolors
 import cv2
@@ -245,6 +246,7 @@ def Discriminator(frame_true, flow_hat, is_training, reuse=False, return_middle_
 
 def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch, dataset_name='', start_model_idx=0, batch_size=16,
                                      val_images=None, val_flows=None, val_labels=None,
+                                     val_pids=None, val_slice_idxs=None,
                                      lw_adv=0.25, lw_appe=1.0, lw_aux=2.0):
     wandb.init(
         project="mres-ICCV2019",
@@ -492,6 +494,15 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 mu_appe_patch = float(np.mean(_tr_appe_patch))
                 mu_opt_patch  = float(np.mean(_tr_opt_patch))
                 print('  [TRAIN-BASELINE] mu_appe = %.4f, mu_opt = %.4f' % (mu_appe, mu_opt))
+                with open('./training_saver/%s/mu_baseline_%d.json' % (dataset_name, i + 1), 'w') as _mu_f:
+                    json.dump({
+                        'epoch':         i + 1,
+                        'model_type':    'flow',
+                        'mu_appe':       mu_appe,
+                        'mu_aux':        mu_opt,
+                        'mu_appe_patch': mu_appe_patch,
+                        'mu_aux_patch':  mu_opt_patch,
+                    }, _mu_f, indent=2)
 
                 val_batch_idx = np.array_split(
                     np.arange(len(val_images)),
@@ -531,6 +542,8 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 val_unhealthy_appe = val_unhealthy_opt = np.nan
                 auc_appe = auc_opt = auc_combined = np.nan
                 auc_appe_patch = auc_opt_patch = auc_combined_patch = np.nan
+                patient_aucs = {}
+                per_disease_pat_aucs = {}
 
                 if val_labels is not None and len(val_labels) == len(val_images):
                     labels_arr = np.array(val_labels)
@@ -625,6 +638,89 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                                 pass
                         print('  [VAL-OPT-WEIGHT] best_w = %.2f, best_auc = %.4f' % (_best_w, _best_auc))
 
+                        # ── Patient-level AUCs ──────────────────────────────
+                        # Aggregators:
+                        #   Mean       — mean over all the patient's samples
+                        #   FrameMax   — max over per-frame (per-sample) scores
+                        #   FrameTop20 — mean of top-20 % per-frame scores
+                        #   SliceMax   — mean within each slice, then max over slices
+                        #   SliceTop20 — mean within each slice, then top-20 % mean
+                        if (val_pids is not None
+                                and val_slice_idxs is not None
+                                and len(val_pids) == len(val_images)
+                                and len(val_slice_idxs) == len(val_images)):
+                            pids_arr = np.array(val_pids)
+                            slcs_arr = np.array(val_slice_idxs)
+                            unique_pids = np.unique(pids_arr)
+
+                            def _top20_mean(arr):
+                                n = len(arr)
+                                if n == 0:
+                                    return np.nan
+                                k = max(1, int(np.ceil(0.2 * n)))
+                                return float(np.mean(np.sort(arr)[-k:]))
+
+                            aggs = ['Mean', 'FrameMax', 'FrameTop20', 'SliceMax', 'SliceTop20']
+                            pat_appe = {a: np.zeros(len(unique_pids)) for a in aggs}
+                            pat_opt  = {a: np.zeros(len(unique_pids)) for a in aggs}
+                            pat_labels_list = []
+                            for pi, pid in enumerate(unique_pids):
+                                m = (pids_arr == pid)
+                                a_p = per_sample_appe[m]
+                                o_p = per_sample_opt[m]
+                                s_p = slcs_arr[m]
+                                pat_appe['Mean'][pi]       = float(np.mean(a_p))
+                                pat_opt['Mean'][pi]        = float(np.mean(o_p))
+                                pat_appe['FrameMax'][pi]   = float(np.max(a_p))
+                                pat_opt['FrameMax'][pi]    = float(np.max(o_p))
+                                pat_appe['FrameTop20'][pi] = _top20_mean(a_p)
+                                pat_opt['FrameTop20'][pi]  = _top20_mean(o_p)
+                                slice_a, slice_o = [], []
+                                for s in np.unique(s_p):
+                                    sm = (s_p == s)
+                                    slice_a.append(float(np.mean(a_p[sm])))
+                                    slice_o.append(float(np.mean(o_p[sm])))
+                                slice_a = np.array(slice_a)
+                                slice_o = np.array(slice_o)
+                                pat_appe['SliceMax'][pi]   = float(np.max(slice_a))
+                                pat_opt['SliceMax'][pi]    = float(np.max(slice_o))
+                                pat_appe['SliceTop20'][pi] = _top20_mean(slice_a)
+                                pat_opt['SliceTop20'][pi]  = _top20_mean(slice_o)
+                                pat_labels_list.append(labels_arr[m][0])
+                            pat_labels_arr = np.array(pat_labels_list)
+                            pat_binary = (pat_labels_arr != 'NOR').astype(int)
+
+                            if np.any(pat_binary == 1) and np.any(pat_binary == 0):
+                                for a in aggs:
+                                    try:
+                                        _aa = roc_auc_score(pat_binary, pat_appe[a])
+                                        _ao = roc_auc_score(pat_binary, pat_opt[a])
+                                        _combined_p = (
+                                            np.log(np.maximum(pat_opt[a], eps) / max(mu_opt, eps))
+                                            + 0.2 * np.log(np.maximum(pat_appe[a], eps) / max(mu_appe, eps))
+                                        )
+                                        _ac = roc_auc_score(pat_binary, _combined_p)
+                                        patient_aucs[a] = {'appe': _aa, 'opt': _ao, 'combined': _ac}
+                                        print('  [VAL-AUC-PAT-%s] appe = %.4f, flow = %.4f, combined = %.4f'
+                                              % (a, _aa, _ao, _ac))
+                                    except ValueError:
+                                        pass
+
+                                for _disease in sorted(np.unique(pat_labels_arr)):
+                                    if _disease == 'NOR':
+                                        continue
+                                    _md = (pat_labels_arr == 'NOR') | (pat_labels_arr == _disease)
+                                    _bd = (pat_labels_arr[_md] != 'NOR').astype(int)
+                                    if np.any(_bd) and not np.all(_bd):
+                                        per_disease_pat_aucs[_disease] = {}
+                                        for a in aggs:
+                                            try:
+                                                _da = roc_auc_score(_bd, pat_appe[a][_md])
+                                                _dx = roc_auc_score(_bd, pat_opt[a][_md])
+                                                per_disease_pat_aucs[_disease][a] = (_da, _dx)
+                                            except ValueError:
+                                                pass
+
                 global_step = (i + 1) * len(batch_idx)
 
                 log_dict = {
@@ -647,6 +743,15 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                     log_dict[f'Val_AUC_{_disease}_Flow']       = _auc_dx
                 log_dict['Val_AUC_BestCombined'] = _best_auc
                 log_dict['Val_BestWeight_Appe']  = _best_w
+                # Patient-level AUCs
+                for _a, _scores in patient_aucs.items():
+                    log_dict[f'Val_AUC_Patient_{_a}_Appearance'] = _scores['appe']
+                    log_dict[f'Val_AUC_Patient_{_a}_Flow']       = _scores['opt']
+                    log_dict[f'Val_AUC_Patient_{_a}_Combined']   = _scores['combined']
+                for _disease, _aggs in per_disease_pat_aucs.items():
+                    for _a, (_da, _dx) in _aggs.items():
+                        log_dict[f'Val_AUC_Patient_{_a}_{_disease}_Appearance'] = _da
+                        log_dict[f'Val_AUC_Patient_{_a}_{_disease}_Flow']       = _dx
 
                 # ── Healthy vs Unhealthy combined charts ──────────────────
                 if not np.isnan(val_healthy_appe) and not np.isnan(val_unhealthy_appe):

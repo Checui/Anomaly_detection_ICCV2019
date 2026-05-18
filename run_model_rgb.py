@@ -115,11 +115,11 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     print("\n=== Loading Validation Data (ED/ES) ===")
 
-    (acdc_val_es, acdc_val_ed, acdc_val_labels, acdc_val_pids,
-     _, _, _, _) = load_acdc_test_val_ed_es_data(args.acdc_dir)
+    (acdc_val_es, acdc_val_ed, acdc_val_labels, acdc_val_pids, _acdc_val_slcs,
+     _, _, _, _, _) = load_acdc_test_val_ed_es_data(args.acdc_dir)
     print(f"ACDC validation (ED/ES): {len(acdc_val_es)} samples")
 
-    mm_val_es, mm_val_ed, mm_val_labels, mm_val_pids = load_mm_validation_ed_es_data(
+    mm_val_es, mm_val_ed, mm_val_labels, mm_val_pids, _mm_val_slcs = load_mm_validation_ed_es_data(
         args.mm_val_dir, args.mm_csv
     )
     print(f"M&M validation (ED/ES):  {len(mm_val_es)} samples")
