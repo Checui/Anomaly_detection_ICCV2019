@@ -49,7 +49,7 @@ def aspect_preserve_resize(image, target_h=128, target_w=128):
     
     # 4. Pad with black pixels
     return cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
-def load_acdc_data(base_dir, target_size=(128, 128)):
+def load_acdc_data(base_dir, target_size=(128, 128), restrict_to_systole=False):
     training_dir = os.path.join(base_dir, 'database', 'training')
     patients = sorted([d for d in os.listdir(training_dir) if os.path.isdir(os.path.join(training_dir, d))])
 
@@ -63,29 +63,42 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
         cfg_path = os.path.join(p_dir, 'Info.cfg')
         if not os.path.exists(cfg_path):
             continue
-            
-        # Check group
-        is_nor = False
+
+        # Parse full Info.cfg (need Group, and ED/ES when restrict_to_systole)
+        info = {}
         try:
             with open(cfg_path, 'r') as f:
                 for line in f:
-                    if line.strip().startswith('Group'):
-                        if 'NOR' in line:
-                            is_nor = True
-                        break
+                    line = line.strip()
+                    if ':' in line:
+                        key, val = line.split(':', 1)
+                        info[key.strip()] = val.strip()
         except Exception as e:
             print(f"Error reading config for {p}: {e}")
             continue
-        
-        if not is_nor:
+
+        if info.get('Group', '') != 'NOR':
             continue
-            
+
+        ed_idx = es_idx = None
+        if restrict_to_systole:
+            try:
+                # ACDC Info.cfg uses 1-based frame indices; subtract 1 for 0-based numpy indexing
+                ed_idx = int(info['ED']) - 1
+                es_idx = int(info['ES']) - 1
+            except (KeyError, ValueError) as e:
+                print(f"Skipping ACDC {p}: missing ED/ES ({e})")
+                continue
+            if es_idx <= ed_idx:
+                print(f"Skipping ACDC {p}: ES ({es_idx}) <= ED ({ed_idx})")
+                continue
+
         print(f"Processing {p} (NOR)...")
         # Load 4D
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
         if not os.path.exists(nii_path):
              continue
-             
+
         try:
             img_obj = sitk.ReadImage(nii_path)
             img_arr = sitk.GetArrayFromImage(img_obj) # (T, Z, Y, X) or similar. Normally ITK is (x,y,z,t) -> numpy (t,z,y,x)
@@ -99,7 +112,11 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
              # Skip if not 4D
              print(f"Skipping {p}: Shape {img_arr.shape} is not 4D")
              continue
-        
+
+        if restrict_to_systole and es_idx >= T:
+            print(f"Skipping ACDC {p}: ES={es_idx} out of range T={T}")
+            continue
+
         for z in range(1, Z - 1):
             slice_seq = img_arr[:, z, :, :]  # Shape: (T, H, W)
              
@@ -142,12 +159,13 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
             # ------------------------------
                     
             processed_frames_arr = np.array(processed_frames) # (T, 128, 128, 3)
-             
+
             # Compute flows and pairs
-            for t in range(T-1):
+            t_range = range(ed_idx, es_idx) if restrict_to_systole else range(T - 1)
+            for t in t_range:
                 prev_gray = (processed_frames_arr[t, :, :, 0] * 255).astype(np.uint8)
                 next_gray = (processed_frames_arr[t+1, :, :, 0] * 255).astype(np.uint8)
-                
+
                 # Calc Dense Optical Flow
                 try:
                     flow = cv2.calcOpticalFlowFarneback(prev_gray, next_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
@@ -166,7 +184,7 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
 
 
 
-def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
+def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128), restrict_to_systole=False):
     """
     Load M&M (Multi-centre, Multi-vendor, Multi-disease) cardiac MRI data.
     Only subjects with Pathology == 'NOR' (normal) are loaded.
@@ -187,10 +205,12 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
     all_images : np.ndarray  shape (N, H, W, 3)
     all_flows  : np.ndarray  shape (N, H, W, 3)  [dx, dy, magnitude]
     """
-    # Load CSV and build set of NOR subject IDs
+    # Load CSV; for systole mode also carry ED/ES per subject
     df = pd.read_csv(csv_path)
-    nor_ids = set(df[df['Pathology'] == 'NOR']['External code'].tolist())
-    print(f"Found {len(nor_ids)} M&M NOR subjects in CSV.")
+    nor_rows = df[df['Pathology'] == 'NOR'][['External code', 'ED', 'ES']]
+    nor_info = {row['External code']: (int(row['ED']), int(row['ES']))
+                for _, row in nor_rows.iterrows()}
+    print(f"Found {len(nor_info)} M&M NOR subjects in CSV.")
 
     all_images = []
     all_flows  = []
@@ -203,8 +223,15 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
 
     for fname in sa_files:
         subject_id = fname.replace('_sa.nii.gz', '')
-        if subject_id not in nor_ids:
+        if subject_id not in nor_info:
             continue
+
+        ed_idx = es_idx = None
+        if restrict_to_systole:
+            ed_idx, es_idx = nor_info[subject_id]
+            if es_idx <= ed_idx:
+                print(f"Skipping M&M {subject_id}: ES ({es_idx}) <= ED ({ed_idx})")
+                continue
 
         print(f"Processing {subject_id} (M&M NOR)...")
         nii_path = os.path.join(mm_training_dir, fname)
@@ -220,6 +247,10 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
             T, Z, H, W = img_arr.shape
         else:
             print(f"Skipping {subject_id}: unexpected shape {img_arr.shape}")
+            continue
+
+        if restrict_to_systole and es_idx >= T:
+            print(f"Skipping M&M {subject_id}: ES={es_idx} out of range T={T}")
             continue
 
         for z in range(1, Z - 1):
@@ -254,7 +285,8 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
 
             processed_frames_arr = np.array(processed_frames)  # (T, H, W, 3)
 
-            for t in range(T - 1):
+            t_range = range(ed_idx, es_idx) if restrict_to_systole else range(T - 1)
+            for t in t_range:
                 prev_gray = (processed_frames_arr[t,   :, :, 0] * 255).astype(np.uint8)
                 next_gray = (processed_frames_arr[t+1, :, :, 0] * 255).astype(np.uint8)
 
@@ -625,7 +657,8 @@ def load_reconstructed_sax_data(recon_root, ed_es_csv, target_size=(128, 128)):
 # pairs with optical flow).
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
+def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42,
+                             restrict_to_systole=False):
     """
     Load the ACDC *testing* set and split it into validation and test subsets.
 
@@ -722,6 +755,20 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
     # ── 3. Processing helper (same logic as load_acdc_data) ────────────────
     def _process_patient(p, p_dir, group):
         """Return (images, flows, labels, pids, slice_idxs) lists for one patient."""
+        ed_idx = es_idx = None
+        if restrict_to_systole:
+            info = patient_info[p]
+            try:
+                # ACDC Info.cfg uses 1-based frame indices; subtract 1 for 0-based numpy indexing
+                ed_idx = int(info['ED']) - 1
+                es_idx = int(info['ES']) - 1
+            except (KeyError, ValueError) as e:
+                print(f"Skipping ACDC {p}: missing ED/ES ({e})")
+                return [], [], [], [], []
+            if es_idx <= ed_idx:
+                print(f"Skipping ACDC {p}: ES ({es_idx}) <= ED ({ed_idx})")
+                return [], [], [], [], []
+
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
         if not os.path.exists(nii_path):
             return [], [], [], [], []
@@ -737,6 +784,10 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
             return [], [], [], [], []
 
         T, Z, H, W = img_arr.shape
+
+        if restrict_to_systole and es_idx >= T:
+            print(f"Skipping ACDC {p}: ES={es_idx} out of range T={T}")
+            return [], [], [], [], []
 
         images, flows, labels, pids, slice_idxs = [], [], [], [], []
 
@@ -765,7 +816,8 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
 
             processed_frames_arr = np.array(processed_frames)  # (T, H, W, 3)
 
-            for t in range(T - 1):
+            t_range = range(ed_idx, es_idx) if restrict_to_systole else range(T - 1)
+            for t in t_range:
                 prev_gray = (processed_frames_arr[t,   :, :, 0] * 255).astype(np.uint8)
                 next_gray = (processed_frames_arr[t+1, :, :, 0] * 255).astype(np.uint8)
 
@@ -831,7 +883,8 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
 # so downstream code can analyse each group separately.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
+def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128),
+                             restrict_to_systole=False):
     """
     Load ALL subjects from the M&M Validation folder (every pathology).
 
@@ -840,6 +893,9 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
     mm_val_dir  : str    Path to Dataset_1/Validation.
     csv_path    : str    Path to the M&M CSV metadata file.
     target_size : tuple  (H, W) resize target, default (128, 128).
+    restrict_to_systole : bool
+        If True, only emit pairs (t, t+1) for t ∈ [ed_idx, es_idx − 1].  Subjects
+        missing ED/ES or with es ≤ ed are skipped.
 
     Returns
     -------
@@ -849,9 +905,10 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
     all_pids       : list[str]    per-sample subject ID
     all_slice_idxs : list[int]    per-sample z-slice index
     """
-    # Build lookup: subject_id -> pathology
+    # Build lookup: subject_id -> (ed_idx, es_idx, pathology)
     df = pd.read_csv(csv_path)
-    pathology_map = dict(zip(df['External code'], df['Pathology']))
+    subject_lookup = {row['External code']: (int(row['ED']), int(row['ES']), row['Pathology'])
+                      for _, row in df.iterrows()}
 
     all_images     = []
     all_flows      = []
@@ -867,8 +924,20 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
     for fname in sa_files:
         subject_id = fname.replace('_sa.nii.gz', '')
-        pathology  = pathology_map.get(subject_id, 'UNKNOWN')
-        nii_path   = os.path.join(mm_val_dir, fname)
+        if subject_id in subject_lookup:
+            ed_idx, es_idx, pathology = subject_lookup[subject_id]
+        else:
+            ed_idx, es_idx, pathology = None, None, 'UNKNOWN'
+
+        if restrict_to_systole:
+            if ed_idx is None:
+                print(f"Skipping M&M {subject_id}: not in CSV (no ED/ES)")
+                continue
+            if es_idx <= ed_idx:
+                print(f"Skipping M&M {subject_id}: ES ({es_idx}) <= ED ({ed_idx})")
+                continue
+
+        nii_path = os.path.join(mm_val_dir, fname)
 
         try:
             img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
@@ -881,6 +950,9 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
             continue
 
         T, Z, H, W = img_arr.shape
+        if restrict_to_systole and es_idx >= T:
+            print(f"Skipping M&M {subject_id}: ES={es_idx} out of range T={T}")
+            continue
         print(f"Processing {subject_id} ({pathology})...")
 
         for z in range(1, Z - 1):
@@ -908,7 +980,8 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
             processed_frames_arr = np.array(processed_frames)  # (T, H, W, 3)
 
-            for t in range(T - 1):
+            t_range = range(ed_idx, es_idx) if restrict_to_systole else range(T - 1)
+            for t in t_range:
                 prev_gray = (processed_frames_arr[t,   :, :, 0] * 255).astype(np.uint8)
                 next_gray = (processed_frames_arr[t+1, :, :, 0] * 255).astype(np.uint8)
 
@@ -1439,23 +1512,41 @@ def load_mm_ed_es_data(mm_training_dir, csv_path, target_size=(128, 128)):
 # the reconstructed cine volumes (no ED/ES CSV needed).
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_reconstructed_sax_data_next_frame(recon_root, target_size=(128, 128)):
+def load_reconstructed_sax_data_next_frame(recon_root, target_size=(128, 128),
+                                            restrict_to_systole=False, ed_es_csv=None):
     """Load all consecutive frame pairs from reconstructed SAX volumes.
 
     Unlike load_reconstructed_sax_data (ED/ES only), this function iterates
     over every adjacent pair t → t+1, matching the behaviour of load_acdc_data
-    and load_mm_data.  No ED/ES CSV is required.
+    and load_mm_data.  No ED/ES CSV is required by default.
 
     Parameters
     ----------
     recon_root  : str    Directory containing *_sax_recon.npy files.
     target_size : tuple  (H, W) resize target, default (128, 128).
+    restrict_to_systole : bool
+        If True, only emit pairs (t, t+1) for t ∈ [ed_idx, es_idx − 1] so the
+        resulting frames cover the systolic contraction phase only.  Requires
+        ed_es_csv.  Cases missing from the CSV or with es ≤ ed are skipped.
+    ed_es_csv : str | None
+        Path to segmentation/ed_es_frames.csv (columns: case_id, ed_frame,
+        es_frame).  Required when restrict_to_systole=True; ignored otherwise.
 
     Returns
     -------
     all_images : np.ndarray  shape (N, H, W, 3)  – frame t
     all_flows  : np.ndarray  shape (N, H, W, 3)  – optical flow t → t+1
     """
+    ed_es_map = {}
+    if restrict_to_systole:
+        if ed_es_csv is None:
+            raise ValueError(
+                "load_reconstructed_sax_data_next_frame: ed_es_csv is required "
+                "when restrict_to_systole=True"
+            )
+        df = pd.read_csv(ed_es_csv)
+        ed_es_map = {row['case_id']: (int(row['ed_frame']), int(row['es_frame']))
+                     for _, row in df.iterrows()}
 
     def _preprocess_frame(frame, p1, p99, target_size):
         f = frame.astype(np.float32)
@@ -1475,11 +1566,26 @@ def load_reconstructed_sax_data_next_frame(recon_root, target_size=(128, 128)):
 
     for fname in npy_files:
         case_id = fname.replace('_sax_recon.npy', '')
+
+        ed_idx = es_idx = None
+        if restrict_to_systole:
+            if case_id not in ed_es_map:
+                print(f"Skipping Recon {case_id}: not in ED/ES CSV.")
+                continue
+            ed_idx, es_idx = ed_es_map[case_id]
+            if es_idx <= ed_idx:
+                print(f"Skipping Recon {case_id}: ES ({es_idx}) <= ED ({ed_idx})")
+                continue
+
         cine = np.load(os.path.join(recon_root, fname))  # (T, Z, H, W)
         if cine.ndim != 4:
             print(f"Skipping {case_id}: unexpected shape {cine.shape}.")
             continue
         T, Z, _, _ = cine.shape
+
+        if restrict_to_systole and es_idx >= T:
+            print(f"Skipping Recon {case_id}: ES={es_idx} out of range T={T}")
+            continue
 
         print(f"Recon {case_id}  T={T}  Z={Z}")
         for z in range(1, Z - 1):
@@ -1492,7 +1598,8 @@ def load_reconstructed_sax_data_next_frame(recon_root, target_size=(128, 128)):
                 for t in range(T)
             ]
 
-            for t in range(T - 1):
+            t_range = range(ed_idx, es_idx) if restrict_to_systole else range(T - 1)
+            for t in t_range:
                 prev_gray = (processed_frames[t][:, :, 0] * 255).astype(np.uint8)
                 next_gray = (processed_frames[t + 1][:, :, 0] * 255).astype(np.uint8)
 

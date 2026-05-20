@@ -58,10 +58,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         '--frame_mode', type=str, default='ed_es',
-        choices=['ed_es', 'next_frame'],
+        choices=['ed_es', 'next_frame', 'next_frame_systole'],
         help=(
             '"ed_es" (default): use only End-Diastole/End-Systole frame pairs. '
-            '"next_frame": use all consecutive frame pairs.'
+            '"next_frame": use all consecutive frame pairs. '
+            '"next_frame_systole": use consecutive pairs (t, t+1) for '
+            't in [ED, ES-1] only (systolic contraction phase). Patients '
+            'with ES <= ED are skipped.'
         )
     )
 
@@ -104,32 +107,46 @@ if __name__ == "__main__":
     #   flow mode  → part1 = images (ES frames),  part2 = flows
     #   rgb  mode  → part1 = es_images,            part2 = ed_images
 
-    def _recon_flow_ed_es():
-        csv = args.recon_csv or os.path.join(
+    def _resolve_recon_csv():
+        return args.recon_csv or os.path.join(
             args.recon_dir, 'segmentation', 'ed_es_frames.csv')
-        return dl_flow.load_reconstructed_sax_data(args.recon_dir, csv)
+
+    def _recon_flow_ed_es():
+        return dl_flow.load_reconstructed_sax_data(args.recon_dir, _resolve_recon_csv())
 
     def _recon_rgb_ed_es():
-        csv = args.recon_csv or os.path.join(
-            args.recon_dir, 'segmentation', 'ed_es_frames.csv')
-        return dl_rgb.load_reconstructed_sax_data_rgb(args.recon_dir, csv)
+        return dl_rgb.load_reconstructed_sax_data_rgb(args.recon_dir, _resolve_recon_csv())
+
+    def _recon_flow_systole():
+        return dl_flow.load_reconstructed_sax_data_next_frame(
+            args.recon_dir, restrict_to_systole=True, ed_es_csv=_resolve_recon_csv())
+
+    def _recon_rgb_systole():
+        return dl_rgb.load_reconstructed_sax_data_next_frame_rgb(
+            args.recon_dir, restrict_to_systole=True, ed_es_csv=_resolve_recon_csv())
 
     _flow_loaders = {
-        ('ACDC',  'ed_es'):      lambda: dl_flow.load_acdc_ed_es_data(args.acdc_dir),
-        ('ACDC',  'next_frame'): lambda: dl_flow.load_acdc_data(args.acdc_dir),
-        ('MM',    'ed_es'):      lambda: dl_flow.load_mm_ed_es_data(args.mm_dir, args.mm_csv),
-        ('MM',    'next_frame'): lambda: dl_flow.load_mm_data(args.mm_dir, args.mm_csv),
-        ('RECON', 'ed_es'):      _recon_flow_ed_es,
-        ('RECON', 'next_frame'): lambda: dl_flow.load_reconstructed_sax_data_next_frame(args.recon_dir),
+        ('ACDC',  'ed_es'):              lambda: dl_flow.load_acdc_ed_es_data(args.acdc_dir),
+        ('ACDC',  'next_frame'):         lambda: dl_flow.load_acdc_data(args.acdc_dir),
+        ('ACDC',  'next_frame_systole'): lambda: dl_flow.load_acdc_data(args.acdc_dir, restrict_to_systole=True),
+        ('MM',    'ed_es'):              lambda: dl_flow.load_mm_ed_es_data(args.mm_dir, args.mm_csv),
+        ('MM',    'next_frame'):         lambda: dl_flow.load_mm_data(args.mm_dir, args.mm_csv),
+        ('MM',    'next_frame_systole'): lambda: dl_flow.load_mm_data(args.mm_dir, args.mm_csv, restrict_to_systole=True),
+        ('RECON', 'ed_es'):              _recon_flow_ed_es,
+        ('RECON', 'next_frame'):         lambda: dl_flow.load_reconstructed_sax_data_next_frame(args.recon_dir),
+        ('RECON', 'next_frame_systole'): _recon_flow_systole,
     }
 
     _rgb_loaders = {
-        ('ACDC',  'ed_es'):      lambda: dl_rgb.load_acdc_ed_es_data(args.acdc_dir),
-        ('ACDC',  'next_frame'): lambda: dl_rgb.load_acdc_data(args.acdc_dir),
-        ('MM',    'ed_es'):      lambda: dl_rgb.load_mm_ed_es_data(args.mm_dir, args.mm_csv),
-        ('MM',    'next_frame'): lambda: dl_rgb.load_mm_data(args.mm_dir, args.mm_csv),
-        ('RECON', 'ed_es'):      _recon_rgb_ed_es,
-        ('RECON', 'next_frame'): lambda: dl_rgb.load_reconstructed_sax_data_next_frame_rgb(args.recon_dir),
+        ('ACDC',  'ed_es'):              lambda: dl_rgb.load_acdc_ed_es_data(args.acdc_dir),
+        ('ACDC',  'next_frame'):         lambda: dl_rgb.load_acdc_data(args.acdc_dir),
+        ('ACDC',  'next_frame_systole'): lambda: dl_rgb.load_acdc_data(args.acdc_dir, restrict_to_systole=True),
+        ('MM',    'ed_es'):              lambda: dl_rgb.load_mm_ed_es_data(args.mm_dir, args.mm_csv),
+        ('MM',    'next_frame'):         lambda: dl_rgb.load_mm_data(args.mm_dir, args.mm_csv),
+        ('MM',    'next_frame_systole'): lambda: dl_rgb.load_mm_data(args.mm_dir, args.mm_csv, restrict_to_systole=True),
+        ('RECON', 'ed_es'):              _recon_rgb_ed_es,
+        ('RECON', 'next_frame'):         lambda: dl_rgb.load_reconstructed_sax_data_next_frame_rgb(args.recon_dir),
+        ('RECON', 'next_frame_systole'): _recon_rgb_systole,
     }
 
     loaders = _flow_loaders if args.model_type == 'flow' else _rgb_loaders
@@ -163,7 +180,11 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # 3. Load VALIDATION data (matches frame_mode: ed_es or next_frame)
     # ------------------------------------------------------------------
-    val_mode_label = 'next_frame' if args.frame_mode == 'next_frame' else 'ED/ES'
+    val_mode_label = {
+        'ed_es': 'ED/ES',
+        'next_frame': 'next_frame',
+        'next_frame_systole': 'next_frame (systole only)',
+    }[args.frame_mode]
     print(f"\n=== Loading Validation Data ({val_mode_label}) ===")
     print(f"Validation datasets: {' '.join(args.val_datasets)}")
 
@@ -174,6 +195,13 @@ if __name__ == "__main__":
         else:
             _val_acdc = dl_rgb.load_acdc_test_val_data
             _val_mm   = dl_rgb.load_mm_validation_data
+    elif args.frame_mode == 'next_frame_systole':
+        if args.model_type == 'flow':
+            _val_acdc = lambda d: dl_flow.load_acdc_test_val_data(d, restrict_to_systole=True)
+            _val_mm   = lambda d, c: dl_flow.load_mm_validation_data(d, c, restrict_to_systole=True)
+        else:
+            _val_acdc = lambda d: dl_rgb.load_acdc_test_val_data(d, restrict_to_systole=True)
+            _val_mm   = lambda d, c: dl_rgb.load_mm_validation_data(d, c, restrict_to_systole=True)
     else:
         if args.model_type == 'flow':
             _val_acdc = dl_flow.load_acdc_test_val_ed_es_data

@@ -136,6 +136,38 @@ def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128), return_
         return images, target_frames, slice_idxs
     return images, target_frames
 
+def extract_consecutive_pairs_systole(img_arr, mask_arr, ed_idx, es_idx,
+                                       target_size=(128, 128), return_slice_idxs=False):
+    """Extract every (t, t+1) frame pair with t in [ed_idx, es_idx - 1].
+
+    Restricts emission to the systolic contraction phase (ED→ES).  Returns
+    empty lists if es_idx <= ed_idx or max(ed_idx, es_idx) >= T.
+    """
+    if img_arr.ndim != 4:
+        return ([], [], []) if return_slice_idxs else ([], [])
+
+    T, Z, _, _ = img_arr.shape
+    if es_idx <= ed_idx or es_idx >= T or ed_idx < 0:
+        return ([], [], []) if return_slice_idxs else ([], [])
+
+    images, target_frames, slice_idxs = [], [], []
+
+    for z in range(1, Z - 1):
+        slice_seq = img_arr[:, z, :, :]
+        p1, p99 = np.percentile(slice_seq, 1), np.percentile(slice_seq, 99)
+
+        processed = [normalize_frame_to_rgb(slice_seq[t], p1, p99, 0, 0, target_size)
+                     for t in range(T)]
+
+        for t in range(ed_idx, es_idx):
+            images.append(processed[t])
+            target_frames.append(processed[t + 1])
+            slice_idxs.append(z)
+
+    if return_slice_idxs:
+        return images, target_frames, slice_idxs
+    return images, target_frames
+
 def extract_edes_pairs(img_arr,mask_arr, ed_idx, es_idx, target_size=(128, 128), motion_threshold=0.01, return_slice_idxs=False):
     if img_arr.ndim != 4:
         return ([], [], []) if return_slice_idxs else ([], [])
@@ -191,10 +223,10 @@ def _to_array(lst):
 # 3. DATASET LOADERS (Corrected)
 # =============================================================================
 
-def load_acdc_data(base_dir, target_size=(128, 128)):
+def load_acdc_data(base_dir, target_size=(128, 128), restrict_to_systole=False):
     training_dir = os.path.join(base_dir, 'database', 'training')
     patients = sorted([d for d in os.listdir(training_dir) if os.path.isdir(os.path.join(training_dir, d))])
-    
+
     all_images, all_targets = [], []
     print(f"Found {len(patients)} patients in ACDC.")
 
@@ -205,13 +237,32 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
         if info.get('Group', '') != 'NOR':
             continue
 
+        ed_idx = es_idx = None
+        if restrict_to_systole:
+            try:
+                # ACDC Info.cfg uses 1-based frame indices; subtract 1 for 0-based numpy indexing
+                ed_idx = int(info['ED']) - 1
+                es_idx = int(info['ES']) - 1
+            except (KeyError, ValueError) as e:
+                print(f"Skipping ACDC {p}: missing ED/ES ({e})")
+                continue
+            if es_idx <= ed_idx:
+                print(f"Skipping ACDC {p}: ES ({es_idx}) <= ED ({ed_idx})")
+                continue
+
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
         if not os.path.exists(nii_path):
             continue
 
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
+            if restrict_to_systole:
+                imgs, targets = extract_consecutive_pairs_systole(
+                    img_arr, 0, ed_idx, es_idx, target_size)
+                if not imgs:
+                    print(f"Skipping ACDC {p}: ES ({es_idx}) out of range or no pairs")
+            else:
+                imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
 
             all_images.extend(imgs)
             all_targets.extend(targets)
@@ -221,18 +272,27 @@ def load_acdc_data(base_dir, target_size=(128, 128)):
     return _to_array(all_images), _to_array(all_targets)
 
 
-def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
+def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128), restrict_to_systole=False):
     df = pd.read_csv(csv_path)
-    nor_ids = set(df[df['Pathology'] == 'NOR']['External code'].tolist())
-    print(f"Found {len(nor_ids)} M&M NOR subjects in CSV.")
+    nor_rows = df[df['Pathology'] == 'NOR'][['External code', 'ED', 'ES']]
+    nor_info = {row['External code']: (int(row['ED']), int(row['ES']))
+                for _, row in nor_rows.iterrows()}
+    print(f"Found {len(nor_info)} M&M NOR subjects in CSV.")
 
     all_images, all_targets = [], []
     sa_files = sorted([f for f in os.listdir(mm_training_dir) if f.endswith('_sa.nii.gz') and not f.endswith('_gt.nii.gz')])
 
     for fname in sa_files:
         subject_id = fname.replace('_sa.nii.gz', '')
-        if subject_id not in nor_ids:
+        if subject_id not in nor_info:
             continue
+
+        ed_idx = es_idx = None
+        if restrict_to_systole:
+            ed_idx, es_idx = nor_info[subject_id]
+            if es_idx <= ed_idx:
+                print(f"Skipping M&M {subject_id}: ES ({es_idx}) <= ED ({ed_idx})")
+                continue
 
         nii_path = os.path.join(mm_training_dir, fname)
         if not os.path.exists(nii_path):
@@ -240,7 +300,13 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128)):
 
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
+            if restrict_to_systole:
+                imgs, targets = extract_consecutive_pairs_systole(
+                    img_arr, 0, ed_idx, es_idx, target_size)
+                if not imgs:
+                    print(f"Skipping M&M {subject_id}: ES ({es_idx}) out of range or no pairs")
+            else:
+                imgs, targets = extract_consecutive_pairs(img_arr, 0, target_size)
             all_images.extend(imgs)
             all_targets.extend(targets)
         except Exception as e:
@@ -334,10 +400,10 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path, target_size=(1
     return _to_array(all_images), _to_array(all_targets)
 
 
-def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
+def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42, restrict_to_systole=False):
     testing_dir = os.path.join(base_dir, 'database', 'testing')
     all_patient_dirs = sorted([d for d in os.listdir(testing_dir) if os.path.isdir(os.path.join(testing_dir, d))])
-    
+
     group_patients, patient_info = {}, {}
     for p in all_patient_dirs:
         info = read_acdc_info(os.path.join(testing_dir, p, 'Info.cfg'))
@@ -364,13 +430,32 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
         info = patient_info[p]
         group = info['Group']
 
+        ed_idx = es_idx = None
+        if restrict_to_systole:
+            try:
+                # ACDC Info.cfg uses 1-based frame indices; subtract 1 for 0-based numpy indexing
+                ed_idx = int(info['ED']) - 1
+                es_idx = int(info['ES']) - 1
+            except (KeyError, ValueError) as e:
+                print(f"Skipping ACDC {p}: missing ED/ES ({e})")
+                continue
+            if es_idx <= ed_idx:
+                print(f"Skipping ACDC {p}: ES ({es_idx}) <= ED ({ed_idx})")
+                continue
+
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
         if not os.path.exists(nii_path):
             continue
 
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            imgs, targets, slcs = extract_consecutive_pairs(img_arr, 0, target_size, return_slice_idxs=True)
+            if restrict_to_systole:
+                imgs, targets, slcs = extract_consecutive_pairs_systole(
+                    img_arr, 0, ed_idx, es_idx, target_size, return_slice_idxs=True)
+                if not imgs:
+                    print(f"Skipping ACDC {p}: ES ({es_idx}) out of range or no pairs")
+            else:
+                imgs, targets, slcs = extract_consecutive_pairs(img_arr, 0, target_size, return_slice_idxs=True)
             labels = [group] * len(imgs)
             pids = [p] * len(imgs)
 
@@ -389,16 +474,29 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42):
             _to_array(test_imgs), _to_array(test_targets), test_lbls, test_pids, test_slice_idxs)
 
 
-def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
+def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128), restrict_to_systole=False):
     df = pd.read_csv(csv_path)
-    pathology_map = dict(zip(df['External code'], df['Pathology']))
+    # subject_id -> (ed_idx, es_idx, pathology)
+    subject_lookup = {row['External code']: (int(row['ED']), int(row['ES']), row['Pathology'])
+                      for _, row in df.iterrows()}
 
     all_images, all_targets, all_labels, all_pids, all_slice_idxs = [], [], [], [], []
     sa_files = sorted([f for f in os.listdir(mm_val_dir) if f.endswith('_sa.nii.gz') and not f.endswith('_gt.nii.gz')])
 
     for fname in sa_files:
         subject_id = fname.replace('_sa.nii.gz', '')
-        pathology = pathology_map.get(subject_id, 'UNKNOWN')
+        if subject_id in subject_lookup:
+            ed_idx, es_idx, pathology = subject_lookup[subject_id]
+        else:
+            ed_idx, es_idx, pathology = None, None, 'UNKNOWN'
+
+        if restrict_to_systole:
+            if ed_idx is None:
+                print(f"Skipping M&M {subject_id}: not in CSV (no ED/ES)")
+                continue
+            if es_idx <= ed_idx:
+                print(f"Skipping M&M {subject_id}: ES ({es_idx}) <= ED ({ed_idx})")
+                continue
 
         nii_path = os.path.join(mm_val_dir, fname)
         if not os.path.exists(nii_path):
@@ -406,7 +504,13 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
         try:
             img_arr = load_and_orient_sitk(nii_path)
-            imgs, targets, slcs = extract_consecutive_pairs(img_arr, 0, target_size, return_slice_idxs=True)
+            if restrict_to_systole:
+                imgs, targets, slcs = extract_consecutive_pairs_systole(
+                    img_arr, 0, ed_idx, es_idx, target_size, return_slice_idxs=True)
+                if not imgs:
+                    print(f"Skipping M&M {subject_id}: ES ({es_idx}) out of range or no pairs")
+            else:
+                imgs, targets, slcs = extract_consecutive_pairs(img_arr, 0, target_size, return_slice_idxs=True)
 
             all_images.extend(imgs)
             all_targets.extend(targets)
@@ -734,28 +838,58 @@ def load_mm_ed_es_data(mm_training_dir, csv_path, target_size=(128, 128)):
 
 # ── Reconstructed SAX next-frame loader (RGB) ────────────────────────────────
 
-def load_reconstructed_sax_data_next_frame_rgb(recon_root, target_size=(128, 128)):
+def load_reconstructed_sax_data_next_frame_rgb(recon_root, target_size=(128, 128),
+                                                 restrict_to_systole=False, ed_es_csv=None):
     """Load all consecutive frame pairs from reconstructed SAX volumes (RGB pipeline).
 
     Unlike load_reconstructed_sax_data_rgb (ED/ES only), this iterates every
-    adjacent pair t → t+1.  No ED/ES CSV is required.
+    adjacent pair t → t+1.  No ED/ES CSV is required by default.
 
     Parameters
     ----------
     recon_root  : str    Directory containing *_sax_recon.npy files.
     target_size : tuple  (H, W) resize target, default (128, 128).
+    restrict_to_systole : bool
+        If True, emit only pairs (t, t+1) for t ∈ [ed_idx, es_idx − 1]
+        (systolic contraction).  Cases missing from ed_es_csv or with es ≤ ed
+        are skipped.
+    ed_es_csv : str | None
+        Path to segmentation/ed_es_frames.csv.  Required when
+        restrict_to_systole=True; ignored otherwise.
 
     Returns
     -------
     all_images  : np.ndarray  shape (N, H, W, 3)  – frame t   (model input)
     all_targets : np.ndarray  shape (N, H, W, 3)  – frame t+1 (reconstruction target)
     """
+    ed_es_map = {}
+    if restrict_to_systole:
+        if ed_es_csv is None:
+            raise ValueError(
+                "load_reconstructed_sax_data_next_frame_rgb: ed_es_csv is required "
+                "when restrict_to_systole=True"
+            )
+        df = pd.read_csv(ed_es_csv)
+        ed_es_map = {row['case_id']: (int(row['ed_frame']), int(row['es_frame']))
+                     for _, row in df.iterrows()}
+
     all_images, all_targets = [], []
     npy_files = sorted(f for f in os.listdir(recon_root) if f.endswith('_sax_recon.npy'))
     print(f"Reconstructed SAX (next-frame): found {len(npy_files)} .npy files.")
 
     for fname in npy_files:
         case_id = fname.replace('_sax_recon.npy', '')
+
+        ed_idx = es_idx = None
+        if restrict_to_systole:
+            if case_id not in ed_es_map:
+                print(f"Skipping Recon {case_id}: not in ED/ES CSV.")
+                continue
+            ed_idx, es_idx = ed_es_map[case_id]
+            if es_idx <= ed_idx:
+                print(f"Skipping Recon {case_id}: ES ({es_idx}) <= ED ({ed_idx})")
+                continue
+
         cine = np.load(os.path.join(recon_root, fname))  # (T, Z, H, W)
         if cine.ndim != 4:
             print(f"Skipping {case_id}: unexpected shape {cine.shape}.")
@@ -768,7 +902,13 @@ def load_reconstructed_sax_data_next_frame_rgb(recon_root, target_size=(128, 128
         cine_cropped = cine[:, :, y0:y0 + side, x0:x0 + side].astype(np.float32)
 
         print(f"Recon {case_id}  T={T}  Z={Z}")
-        imgs, targets = extract_consecutive_pairs(cine_cropped, 0, target_size)
+        if restrict_to_systole:
+            imgs, targets = extract_consecutive_pairs_systole(
+                cine_cropped, 0, ed_idx, es_idx, target_size)
+            if not imgs:
+                print(f"Skipping Recon {case_id}: ES ({es_idx}) out of range T={T} or no pairs")
+        else:
+            imgs, targets = extract_consecutive_pairs(cine_cropped, 0, target_size)
         all_images.extend(imgs)
         all_targets.extend(targets)
 

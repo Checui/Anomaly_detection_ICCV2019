@@ -5,7 +5,7 @@
 # -----------------------------------------------------------------------------
 
 # Give your job a descriptive name
-#PBS -N Train_Combined_Models
+#PBS -N Train_NextFrameSystole
 
 # Request the maximum time you think the job will take (HH:MM:SS)
 # Maximum limit on Imperial HPC is usually 72:00:00. Here we request 24 hours.
@@ -51,12 +51,12 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 # you placed them in your ephemeral storage relative to this script.
 VERSION="v1"
 
-echo "--- Starting Model Training: Flow, ED/ES pairs, all datasets (version: ${VERSION}) ---"
+echo "--- Starting Model Training: Flow, next_frame_systole pairs, all datasets (version: ${VERSION}) ---"
 
 python run_model.py \
     --model_type flow \
     --datasets ACDC MM RECON \
-    --frame_mode ed_es \
+    --frame_mode next_frame_systole \
     --acdc_dir ../Dataset_2 \
     --mm_dir ../Dataset_1/Training \
     --mm_val_dir ../Dataset_1/Validation \

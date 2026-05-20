@@ -24,7 +24,7 @@ Key dependency: `tensorflow==2.12.0`, used via TF v1 compatibility mode (`tf.com
 |---|---|---|
 | `--model_type` | `flow` (default) / `rgb` | Which GAN backend: `GAN_tf` (optical flow head) or `GAN_tf_rgb` (ED-frame prediction head) |
 | `--datasets` | `ACDC` `MM` `RECON` (one or more, space-separated) | Training datasets to load; `RECON` requires `--recon_dir` |
-| `--frame_mode` | `ed_es` (default) / `next_frame` | ED/ES pairs only vs all consecutive frame pairs |
+| `--frame_mode` | `ed_es` (default) / `next_frame` / `next_frame_systole` | ED/ES pairs only · all consecutive frame pairs · consecutive pairs restricted to t ∈ [ED, ES−1] (systolic phase only; patients with ES ≤ ED are skipped). For RECON, the ED/ES CSV (`--recon_csv` or `<recon_dir>/segmentation/ed_es_frames.csv`) is required when using `next_frame_systole`; cases missing from the CSV are skipped. Validation also restricts to the same systolic range. |
 
 ```bash
 # Flow model, ACDC + MM, ED/ES pairs (the main cardiac MRI experiment)
@@ -134,6 +134,11 @@ In all pipelines, `μ_*` are the mean per-sample scores computed over the **enti
 - Resized with `aspect_preserve_resize` (letterbox to 128×128).
 - Static slices discarded: `mean(flow_mag) < 0.05` or `max(flow_mag) < 0.5` (flow pipeline); `mean(|f2 - f1|) < 0.01` (RGB pipeline); threshold is `0.001` for RECON volumes (raw intensities ~1e-5).
 - The GAN receives frames in `[-1, 1]` — scaling is applied inside the TF graph (`(x / 0.5) − 1`), not in the loaders.
+
+**ED/ES frame index conventions (per dataset):**
+- **ACDC** — `Info.cfg` stores `ED` and `ES` as **1-based** indices. All loaders must subtract 1 before indexing into numpy arrays (e.g. `ed_idx = int(info['ED']) - 1`).
+- **M&M** — CSV `ED` and `ES` columns are already **0-based**. Loaders use the values **as-is**, no subtraction.
+- **RECON** — `segmentation/ed_es_frames.csv` (`ed_frame`, `es_frame`) is **0-based**. Used as-is.
 
 **Validation split (ACDC test set):** `run_model.py` uses the **entire** 50-patient ACDC test set for validation (the previous 12-patient subset was not representative enough). The loader functions (`load_acdc_test_val_data`, `load_acdc_test_val_ed_es_data`) still perform the seed-42 12 / 38 patient split internally for reproducibility, but `run_model.py` concatenates both halves before passing them to the trainer.
 
