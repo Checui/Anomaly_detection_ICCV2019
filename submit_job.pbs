@@ -49,7 +49,14 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 # Run your Python training script
 # Note: Ensure the paths (--acdc_dir, --mm_dir, --mm_csv) perfectly match where 
 # you placed them in your ephemeral storage relative to this script.
-VERSION="v1"
+VERSION="v1_orient_spacing"
+
+# IMPORTANT: --orient_normalize requires
+#   ../reconstructed_sax_images_training_2023/segmentation/orientation_params.csv
+# to exist on this filesystem (the CSV is not in the git repo; scp it from your
+# local workstation, e.g.
+#   scp orientation_params.csv user@hpc:/path/to/reconstructed_sax_images_training_2023/segmentation/
+# ).  Without the CSV the flag silently no-ops per patient (pass-through).
 
 echo "--- Starting Model Training: Flow, next_frame_systole pairs, all datasets (version: ${VERSION}) ---"
 
@@ -62,6 +69,8 @@ python run_model.py \
     --mm_val_dir ../Dataset_1/Validation \
     --mm_csv "../Dataset_1/211230_M&Ms_Dataset_information_diagnosis_opendataset.csv" \
     --recon_dir ../reconstructed_sax_images_training_2023 \
+    --orient_normalize \
+    --spacing_normalize \
     --epochs 100 \
     --start_epoch 0 \
     --run_tag "${VERSION}"
