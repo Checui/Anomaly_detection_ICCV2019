@@ -395,9 +395,14 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                 # --- NEW: Grab the raw batches ---
                 raw_es_batch = training_es_images[batch_idx[j]]
                 raw_ed_batch = training_ed_images[batch_idx[j]]
-                
-                # Apply paired augmentation (training only)
-                aug_es_batch, aug_ed_batch = augment_paired_batch(raw_es_batch, raw_ed_batch)
+
+                # Paired augmentation disabled: orientation normalisation puts
+                # every patient in a canonical pose (LV centred, RV on viewer
+                # left), so a random 90/180/270 rotation would undo that
+                # canonicalisation.  Pass the raw batch through unchanged.
+                # To re-enable, restore:
+                #   aug_es_batch, aug_ed_batch = augment_paired_batch(raw_es_batch, raw_ed_batch)
+                aug_es_batch, aug_ed_batch = raw_es_batch, raw_ed_batch
 
                 # discriminator
                 _, curr_D_loss, summary = sess.run([D_optimizer, D_loss, merge],

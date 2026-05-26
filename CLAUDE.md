@@ -120,9 +120,11 @@ Logged to W&B as `Val_AUC_Appe_Patch`, `Val_AUC_Flow_Patch` / `Val_AUC_ED_Patch`
 In all pipelines, `μ_*` are the mean per-sample scores computed over the **entire training set in eval mode**, recomputed each validation epoch. Training baselines logged as `Train_Baseline_Appe` / `Train_Baseline_Opt` (`GAN_tf`) or `Train_Baseline_ED` (`GAN_tf_rgb`). Note: the training-set eval pass runs every validation epoch — roughly doubles validation wall time.
 
 **`GAN_tf_rgb.py` differences from `GAN_tf.py`:**
-- `augment_paired_batch()` applies random 90° rotations to (ES, ED) pairs during training.
+- `augment_paired_batch()` is defined but no longer called from the training loop. It applied a random 90/180/270° rotation to (ES, ED) pairs, which now defeats orientation normalisation — once the loader puts every patient in a canonical pose (LV centred, RV on viewer left), randomising the orientation back via 90° increments undoes that canonicalisation. Pass-through line at the call site preserves the variable names so the rest of the loop is unchanged. Re-enable by uncommenting the one line marked in `GAN_tf_rgb.py`.
 - Auxiliary target is `scaled_ed` (ED frame in `[-1, 1]`); the discriminator sees `[es_frame, pred_ed]`.
 - `loss_aux` is named `loss_ed`; W&B keys use `_ED` suffix instead of `_Flow`.
+
+**Data augmentation across the codebase**: the 90° rotation in `augment_paired_batch` is the *only* data augmentation present anywhere — there's nothing in `GAN_tf.py` (flow head), in either data loader, or in `utils.py`. With that disabled, training runs on the canonical post-normalisation frames with no augmentation. Future augmentations should be implemented in the loaders or inside the training loop alongside the disabled `augment_paired_batch` call.
 
 ### Data Loaders
 
