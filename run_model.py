@@ -95,10 +95,64 @@ if __name__ == "__main__":
     parser.add_argument('--lw_aux',  type=float, default=2.0,
                         help='Loss weight for the auxiliary prediction term (flow or ED).')
 
+    # ── Orientation normalisation ─────────────────────────────────────────────
+    parser.add_argument('--orient_normalize', action='store_true',
+                        help='Rotate+translate each volume so the LV centroid is centred '
+                             'and the RV pool sits on the viewer left. Requires that '
+                             'compute_orientation.py has been run.')
+    parser.add_argument('--orient_params', type=str, default=None,
+                        help='Path to orientation_params.csv. Defaults to '
+                             '<recon_dir>/segmentation/orientation_params.csv when '
+                             '--recon_dir is set, else '
+                             '../reconstructed_sax_images_training_2023/segmentation/orientation_params.csv.')
+
+    # ── Spacing normalisation ─────────────────────────────────────────────────
+    parser.add_argument('--spacing_normalize', action='store_true',
+                        help='Resample each volume to --target_spacing mm/px and '
+                             'centre-crop (pad if smaller) to --target_size px.  '
+                             'Applied AFTER orientation, so the central crop is '
+                             'anatomically aligned with the LV centroid.')
+    parser.add_argument('--target_spacing', type=float, default=1.5,
+                        help='Target in-plane spacing in mm/px (default 1.5). '
+                             'Combined with --target_size 128 -> 192 mm x 192 mm FoV.')
+    parser.add_argument('--target_size', type=int, default=128,
+                        help='Output side length in pixels (default 128).')
+    parser.add_argument('--recon_spacing', type=float, default=2.0,
+                        help='Assumed RECON in-plane spacing in mm/px (no header on disk). '
+                             'Default 2.0.')
+
     args = parser.parse_args()
 
     if 'RECON' in args.datasets and args.recon_dir is None:
         parser.error('--recon_dir is required when RECON is in --datasets')
+
+    # ── Enable orientation normalisation in both loaders (no-op when off) ─────
+    if args.orient_normalize:
+        if args.orient_params:
+            orient_csv = args.orient_params
+        elif args.recon_dir is not None:
+            orient_csv = os.path.join(args.recon_dir, 'segmentation', 'orientation_params.csv')
+        else:
+            orient_csv = os.path.join(
+                '..', 'reconstructed_sax_images_training_2023',
+                'segmentation', 'orientation_params.csv')
+        print(f"[run_model] orientation normalisation ON, params={orient_csv}")
+        dl_flow.set_orientation_normalization(True, orient_csv)
+        dl_rgb.set_orientation_normalization(True, orient_csv)
+    else:
+        dl_flow.set_orientation_normalization(False)
+        dl_rgb.set_orientation_normalization(False)
+
+    # ── Enable spacing normalisation in both loaders (no-op when off) ────────
+    if args.spacing_normalize:
+        recon_xy = (args.recon_spacing, args.recon_spacing)
+        print(f"[run_model] spacing normalisation ON, target={args.target_spacing} mm/px, "
+              f"size={args.target_size} px, recon_spacing={recon_xy}")
+        dl_flow.set_spacing_normalization(True, args.target_spacing, args.target_size, recon_xy)
+        dl_rgb.set_spacing_normalization(True, args.target_spacing, args.target_size, recon_xy)
+    else:
+        dl_flow.set_spacing_normalization(False)
+        dl_rgb.set_spacing_normalization(False)
 
     # ------------------------------------------------------------------
     # 1. Build per-dataset loader dispatch tables

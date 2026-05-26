@@ -26,6 +26,22 @@ Key dependency: `tensorflow==2.12.0`, used via TF v1 compatibility mode (`tf.com
 | `--datasets` | `ACDC` `MM` `RECON` (one or more, space-separated) | Training datasets to load; `RECON` requires `--recon_dir` |
 | `--frame_mode` | `ed_es` (default) / `next_frame` / `next_frame_systole` | ED/ES pairs only · all consecutive frame pairs · consecutive pairs restricted to t ∈ [ED, ES−1] (systolic phase only; patients with ES ≤ ED are skipped). For RECON, the ED/ES CSV (`--recon_csv` or `<recon_dir>/segmentation/ed_es_frames.csv`) is required when using `next_frame_systole`; cases missing from the CSV are skipped. Validation also restricts to the same systolic range. |
 
+Optional orientation-normalisation flags (default off, both loaders pass-through when disabled):
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--orient_normalize` | off | Rotate + translate every 4D volume so the LV centroid sits at the image centre and the RV pool sits on the viewer's left. Applied per patient (single transform per case) using params keyed by `case_id`. |
+| `--orient_params` | `<recon_dir>/segmentation/orientation_params.csv` (or workspace-relative fallback) | Path to the precomputed orientation CSV produced by `reconstructed_sax_images_training_2023/compute_orientation.py`. |
+
+Optional spacing-normalisation flags (default off, both loaders pass-through when disabled). When on, applied AFTER orientation:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--spacing_normalize` | off | Resample each volume to `--target_spacing` mm/px (in-plane) then centre-crop or zero-pad to `--target_size` px. Default 1.5 mm/px × 128 px = 192 mm × 192 mm FoV. Output array is `(T, Z, target_size, target_size)`. |
+| `--target_spacing` | `1.5` (mm/px) | Target in-plane voxel spacing after resample. |
+| `--target_size` | `128` (px) | Output side length. With default spacing this is a 192 mm box. |
+| `--recon_spacing` | `2.0` (mm/px) | Assumed in-plane spacing for RECON `.npy` volumes (no NIfTI header on disk). Cleanest place to override if upstream reconstruction changes. |
+
 ```bash
 # Flow model, ACDC + MM, ED/ES pairs (the main cardiac MRI experiment)
 python run_model.py --model_type flow --datasets ACDC MM --frame_mode ed_es --epochs 100 \
@@ -133,7 +149,26 @@ In all pipelines, `μ_*` are the mean per-sample scores computed over the **enti
 - Frames normalised to `[0, 1]` via 1st/99th percentile clipping, then converted to 3-channel.
 - Resized with `aspect_preserve_resize` (letterbox to 128×128).
 - Static slices discarded: `mean(flow_mag) < 0.05` or `max(flow_mag) < 0.5` (flow pipeline); `mean(|f2 - f1|) < 0.01` (RGB pipeline); threshold is `0.001` for RECON volumes (raw intensities ~1e-5).
+- **Slice selection**: every per-slice loop iterates `_middle_slice_range(Z)`, which drops the top and bottom 20% of slices (keeps the middle 60%). Helper defined at the top of each loader file. For small Z (e.g. Z ≤ 5) it falls back to dropping a single slice from each end so the previous `range(1, Z - 1)` behaviour is preserved. Z=8 ends up at 50% because round(1.6)=2; Z=10/15/20 land at 60% cleanly.
 - The GAN receives frames in `[-1, 1]` — scaling is applied inside the TF graph (`(x / 0.5) − 1`), not in the loaders.
+
+**Orientation normalisation (opt-in via `--orient_normalize`):**
+- Each loader exposes `set_orientation_normalization(enabled, csv_path)` which `run_model.py` calls before any `load_*` invocation. When enabled, every 4D volume returned by the load step is rotated + translated in the *original* image coordinate frame before any percentile normalisation / resize. Computed once per patient (single transform applied to every (T, Z) slice) so temporal coherence is preserved.
+- Implementation: `orientation_normalize.py` (loader side, dependency-light — `cv2.warpAffine` only) reads the per-patient row from `orientation_params.csv` (`case_id, dataset, lv_cy, lv_cx, rv_cy, rv_cx, delta_deg, tx, ty, flip, status, ...`) and applies the affine. In `data_loader.py` the helper `_maybe_normalize_volume(volume, case_id)` is called explicitly at every load site; in `data_loader_rgb.py` the wrap is inside `load_and_orient_sitk()`, which derives `case_id` from the filename (skipping `_gt.nii.gz` masks). The two RECON `np.load(...)` sites in `data_loader_rgb.py` are patched explicitly.
+- Per-patient params live in `<workspace>/reconstructed_sax_images_training_2023/segmentation/orientation_params.csv` and are produced by `reconstructed_sax_images_training_2023/compute_orientation.py` (uses the MONAI ventricular bundle in `reconstructed_sax_images_training_2023/my_models/`). The CSV covers RECON + ACDC train/test + M&Ms train/val/test (569 patients on the current data; all hit `status=ok`).
+- Fallback semantics: any row with `status != "ok"` or non-finite `delta_deg` is a no-op (the loader returns the raw volume unchanged for that patient). Patients missing from the CSV are also passed through. So enabling the flag is safe even on datasets you haven't run `compute_orientation.py` for.
+- Convention: target angle is π in `atan2(dy, dx)` (image-y down), i.e. RV pool ends up on the viewer's left of the LV. LV centroid is the rotation pivot and gets translated to the image centre. Flip-detection is disabled (Stage-0 QC mosaic confirmed the RECON dataset is internally consistent — no LR-mirrored cases).
+
+**Spacing normalisation (opt-in via `--spacing_normalize`):**
+- Implementation: `spacing_normalize.py` (loader side, `cv2 + numpy` only). Exposes `set_spacing_normalization(enabled, target_spacing, target_size, recon_spacing)` + `apply_to_volume(volume, spacing_xy)`. Each (T, Z) slice is resampled by `(sx/target_spacing, sy/target_spacing)` via `cv2.resize(INTER_LINEAR)`, then `_center_crop_or_pad` centres the result in a `target_size × target_size` zero-padded canvas. Output dtype is `float32`.
+- **Order in the pipeline is fixed**: orientation first (operates in original-spacing coords using the precomputed CSV), spacing second. This lets the central crop be anatomically aligned with the LV — without orientation, a fixed crop would chop off the heart for patients with off-centre acquisitions.
+- Spacing source per dataset:
+  - **ACDC / M&Ms**: `sitk.ReadImage(path).GetSpacing()[:2]` at load time. In `data_loader.py`, NIfTI reads use `_read_nifti_4d(nii_path)` which returns `(array, (sx, sy))`. In `data_loader_rgb.py`, the spacing is read inside `load_and_orient_sitk()` and the resample is applied automatically.
+  - **RECON**: no header on disk — the constant set by `--recon_spacing` (default 2.0 mm/px isotropic) is used. The two `cine = np.load(...)` sites in each loader pass `_spacing_recon_default()` explicitly.
+- Loader-side bypass of the existing `aspect_preserve_resize(128, 128)`: after the spacing transform every frame is already `(128, 128)`, so the existing resize call becomes a no-op (`scale = min(128/128, 128/128) = 1`, no padding). No further changes were needed downstream.
+- Percentile normalisation is still computed per-slice on the cropped output (`np.percentile(slice_seq, [1, 99])`). Less background after the crop means the p1/p99 range is tighter — usually slightly better dynamic range. Watch for it if motion thresholds need re-tuning.
+- Patients with non-isotropic in-plane spacing (`sx != sy`) get a non-uniform scale factor, which the existing `cv2.resize` handles. All ACDC and M&Ms cardiac SAX scans are in-plane isotropic in practice.
+- Visual QC: `python spacing_qc.py` writes `Anomaly_detection_ICCV2019/spacing_qc.png` with one row per source × three columns (raw / oriented / oriented+spacing). The heart should look the same physical size in the right column across all rows.
 
 **ED/ES frame index conventions (per dataset):**
 - **ACDC** — `Info.cfg` stores `ED` and `ES` as **1-based** indices. All loaders must subtract 1 before indexing into numpy arrays (e.g. `ed_idx = int(info['ED']) - 1`).

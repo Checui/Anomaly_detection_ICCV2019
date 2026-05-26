@@ -5,14 +5,122 @@ import pandas as pd
 import SimpleITK as sitk
 import random
 
+# ── Orientation normalisation (opt-in) ──────────────────────────────────────
+try:
+    from orientation_normalize import (
+        apply_to_volume as _orient_apply_to_volume,
+        load_orientation_params as _orient_load_params,
+    )
+    _ORIENT_AVAILABLE = True
+except ImportError:
+    _ORIENT_AVAILABLE = False
+    def _orient_apply_to_volume(volume, case_id, params_map):
+        return volume
+    def _orient_load_params(csv_path=None):
+        return {}
+
+_ORIENT_PARAMS_MAP: dict = {}
+_ORIENT_ENABLED = False
+
+
+def set_orientation_normalization(enabled, csv_path=None):
+    """Toggle orientation normalisation. Call before any load_* function."""
+    global _ORIENT_PARAMS_MAP, _ORIENT_ENABLED
+    _ORIENT_ENABLED = bool(enabled) and _ORIENT_AVAILABLE
+    _ORIENT_PARAMS_MAP = _orient_load_params(csv_path) if _ORIENT_ENABLED else {}
+    if enabled and not _ORIENT_AVAILABLE:
+        print("[data_loader_rgb] orientation_normalize unavailable; skipping rotation.")
+
+
+def _maybe_normalize_volume(volume, case_id):
+    if not _ORIENT_ENABLED or volume is None:
+        return volume
+    return _orient_apply_to_volume(volume, case_id, _ORIENT_PARAMS_MAP)
+
+
+# ── Spacing normalisation (opt-in) ──────────────────────────────────────────
+try:
+    from spacing_normalize import (
+        apply_to_volume as _spacing_apply_to_volume,
+        is_enabled as _spacing_is_enabled,
+        recon_spacing as _spacing_recon_default,
+        set_spacing_normalization as _spacing_set_normalization,
+    )
+    _SPACING_AVAILABLE = True
+except ImportError:
+    _SPACING_AVAILABLE = False
+    def _spacing_apply_to_volume(volume, spacing_xy):
+        return volume
+    def _spacing_is_enabled():
+        return False
+    def _spacing_recon_default():
+        return (2.0, 2.0)
+    def _spacing_set_normalization(*args, **kwargs):
+        pass
+
+
+def set_spacing_normalization(enabled, target_spacing=1.5, target_size=128,
+                              recon_spacing=(2.0, 2.0)):
+    """Toggle spacing normalisation. Call before any load_* function."""
+    if not _SPACING_AVAILABLE:
+        if enabled:
+            print("[data_loader_rgb] spacing_normalize unavailable; skipping resample.")
+        return
+    _spacing_set_normalization(enabled, target_spacing, target_size, recon_spacing)
+
+
+def _maybe_resample_volume(volume, spacing_xy):
+    if not _spacing_is_enabled() or volume is None:
+        return volume
+    return _spacing_apply_to_volume(volume, spacing_xy)
+
+
+def _middle_slice_range(Z, frac=0.2):
+    """Range covering the middle (1 - 2*frac) of Z slices.
+
+    Drops the top and bottom ``frac`` of slices (default 20% each, keeping the
+    middle 60%).  For small Z, drops at least 1 slice from each end so the
+    behaviour matches the previous ``range(1, Z - 1)`` convention.
+    """
+    n_drop = max(1, int(round(frac * Z)))
+    stop = max(n_drop, Z - n_drop)
+    return range(n_drop, stop)
+
+
 # =============================================================================
 # 1. CORE IMAGE UTILITIES
 # =============================================================================
 
+def _case_id_from_nii_path(nii_path):
+    """Derive case_id from filename if it looks like an image (not a _gt mask)."""
+    name = os.path.basename(str(nii_path))
+    if name.endswith("_gt.nii.gz"):
+        return None
+    for suffix in ("_sa.nii.gz", "_4d.nii.gz"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return None
+
+
 def load_and_orient_sitk(nii_path):
-    """Safely loads 4D NIfTI images WITHOUT breaking the oblique SAX plane."""
+    """Safely loads 4D NIfTI images WITHOUT breaking the oblique SAX plane.
+
+    When orientation normalisation is enabled (set_orientation_normalization),
+    cine images are auto-rotated/translated based on the case_id derived from
+    the filename.  Mask files (``*_gt.nii.gz``) are passed through unchanged.
+
+    When spacing normalisation is enabled (set_spacing_normalization), cine
+    images are additionally resampled to the target millimetre spacing and
+    centre-cropped to the target pixel size.  Masks are passed through.
+    """
     image = sitk.ReadImage(str(nii_path))
-    return sitk.GetArrayFromImage(image)
+    arr = sitk.GetArrayFromImage(image)
+    case_id = _case_id_from_nii_path(nii_path)
+    if case_id is not None:
+        arr = _maybe_normalize_volume(arr, case_id)
+        spacing_xy = tuple(float(s) for s in image.GetSpacing()[:2])
+        arr = _maybe_resample_volume(arr, spacing_xy)
+    return arr
 
 def center_crop_or_pad(image, target_h=128, target_w=128):
     """Center crops an image, padding with zeros if it's smaller than the target size."""
@@ -121,7 +229,7 @@ def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128), return_
     T, Z, _, _ = img_arr.shape
     images, target_frames, slice_idxs = [], [], []
 
-    for z in range(1, Z - 1):
+    for z in _middle_slice_range(Z):
         slice_seq = img_arr[:, z, :, :]
         p1, p99 = np.percentile(slice_seq, 1), np.percentile(slice_seq, 99)
 
@@ -152,7 +260,7 @@ def extract_consecutive_pairs_systole(img_arr, mask_arr, ed_idx, es_idx,
 
     images, target_frames, slice_idxs = [], [], []
 
-    for z in range(1, Z - 1):
+    for z in _middle_slice_range(Z):
         slice_seq = img_arr[:, z, :, :]
         p1, p99 = np.percentile(slice_seq, 1), np.percentile(slice_seq, 99)
 
@@ -180,7 +288,7 @@ def extract_edes_pairs(img_arr,mask_arr, ed_idx, es_idx, target_size=(128, 128),
     # centers = get_slice_centers_from_mask(mask_arr)
     images, target_frames, slice_idxs = [], [], []
 
-    for z in range(1, Z - 1):
+    for z in _middle_slice_range(Z):
         # cy, cx = centers[z] # Unpack the center for this specific slice
 
         slice_seq = img_arr[:, z, :, :]
@@ -743,13 +851,15 @@ def load_reconstructed_sax_data_rgb(recon_root, ed_es_csv, target_size=(128, 128
         if cine.ndim != 4:
             print(f"Skipping {case_id}: unexpected shape {cine.shape}.")
             continue
+        cine = _maybe_normalize_volume(cine, case_id)
+        cine = _maybe_resample_volume(cine, _spacing_recon_default())
         T, Z, _, _ = cine.shape
         if es_idx >= T or ed_idx >= T:
             print(f"Skipping {case_id}: ED={ed_idx}/ES={es_idx} out of range T={T}.")
             continue
 
         print(f"Recon {case_id}  ED={ed_idx}  ES={es_idx}")
-        for z in range(1, Z - 1):
+        for z in _middle_slice_range(Z):
             slice_seq = cine[:, z, :, :].astype(np.float32)   # (T, H, W)
             h, w = slice_seq.shape[1], slice_seq.shape[2]
             side = min(h, w)
@@ -894,6 +1004,8 @@ def load_reconstructed_sax_data_next_frame_rgb(recon_root, target_size=(128, 128
         if cine.ndim != 4:
             print(f"Skipping {case_id}: unexpected shape {cine.shape}.")
             continue
+        cine = _maybe_normalize_volume(cine, case_id)
+        cine = _maybe_resample_volume(cine, _spacing_recon_default())
         T, Z, h, w = cine.shape
 
         # Centre-square crop to match the ED/ES loader behaviour

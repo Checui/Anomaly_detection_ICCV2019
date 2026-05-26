@@ -4,6 +4,110 @@ import numpy as np
 import pandas as pd
 import SimpleITK as sitk
 
+# ── Orientation normalisation (opt-in) ──────────────────────────────────────
+# When enabled via set_orientation_normalization(True, csv_path), every 4D
+# volume loaded below is rotated + translated so the LV centroid sits at the
+# image centre and the RV pool sits on the viewer's left.  Per-patient params
+# come from reconstructed_sax_images_training_2023/segmentation/orientation_params.csv.
+try:
+    from orientation_normalize import (
+        apply_to_volume as _orient_apply_to_volume,
+        load_orientation_params as _orient_load_params,
+    )
+    _ORIENT_AVAILABLE = True
+except ImportError:
+    _ORIENT_AVAILABLE = False
+    def _orient_apply_to_volume(volume, case_id, params_map):
+        return volume
+    def _orient_load_params(csv_path=None):
+        return {}
+
+_ORIENT_PARAMS_MAP: dict = {}
+_ORIENT_ENABLED = False
+
+
+def set_orientation_normalization(enabled, csv_path=None):
+    """Toggle orientation normalisation. Call before any load_* function."""
+    global _ORIENT_PARAMS_MAP, _ORIENT_ENABLED
+    _ORIENT_ENABLED = bool(enabled) and _ORIENT_AVAILABLE
+    _ORIENT_PARAMS_MAP = _orient_load_params(csv_path) if _ORIENT_ENABLED else {}
+    if enabled and not _ORIENT_AVAILABLE:
+        print("[data_loader] orientation_normalize unavailable; running without rotation.")
+
+
+def _maybe_normalize_volume(volume, case_id):
+    if not _ORIENT_ENABLED or volume is None:
+        return volume
+    return _orient_apply_to_volume(volume, case_id, _ORIENT_PARAMS_MAP)
+
+
+# ── Spacing normalisation (opt-in) ──────────────────────────────────────────
+# Resample each volume from its native mm/px spacing to a fixed target
+# (default 1.5 mm/px) and centre-crop to a fixed pixel size (default 128 ->
+# 192 mm FoV).  Applied AFTER orientation, BEFORE the percentile normaliser.
+try:
+    from spacing_normalize import (
+        apply_to_volume as _spacing_apply_to_volume,
+        is_enabled as _spacing_is_enabled,
+        recon_spacing as _spacing_recon_default,
+        set_spacing_normalization as _spacing_set_normalization,
+        target_size as _spacing_target_size,
+    )
+    _SPACING_AVAILABLE = True
+except ImportError:
+    _SPACING_AVAILABLE = False
+    def _spacing_apply_to_volume(volume, spacing_xy):
+        return volume
+    def _spacing_is_enabled():
+        return False
+    def _spacing_recon_default():
+        return (2.0, 2.0)
+    def _spacing_set_normalization(*args, **kwargs):
+        pass
+    def _spacing_target_size():
+        return 128
+
+
+def set_spacing_normalization(enabled, target_spacing=1.5, target_size=128,
+                              recon_spacing=(2.0, 2.0)):
+    """Toggle spacing normalisation. Call before any load_* function."""
+    if not _SPACING_AVAILABLE:
+        if enabled:
+            print("[data_loader] spacing_normalize unavailable; running without resampling.")
+        return
+    _spacing_set_normalization(enabled, target_spacing, target_size, recon_spacing)
+
+
+def _maybe_resample_volume(volume, spacing_xy):
+    if not _spacing_is_enabled() or volume is None:
+        return volume
+    return _spacing_apply_to_volume(volume, spacing_xy)
+
+
+def _read_nifti_4d(nii_path):
+    """Load a NIfTI file, returning (array, (sx, sy)) in mm/px.
+
+    Equivalent to the existing inline ``sitk.GetArrayFromImage(sitk.ReadImage(path))``
+    but also exposes the in-plane voxel spacing needed by spacing normalisation.
+    """
+    image = sitk.ReadImage(str(nii_path))
+    arr = sitk.GetArrayFromImage(image)
+    sx, sy = image.GetSpacing()[:2]
+    return arr, (float(sx), float(sy))
+
+
+def _middle_slice_range(Z, frac=0.2):
+    """Range covering the middle (1 - 2*frac) of Z slices.
+
+    Drops the top and bottom ``frac`` of slices (default 20% each, keeping the
+    middle 60%).  For small Z, drops at least 1 slice from each end so the
+    behaviour matches the previous ``range(1, Z - 1)`` convention.
+    """
+    n_drop = max(1, int(round(frac * Z)))
+    stop = max(n_drop, Z - n_drop)
+    return range(n_drop, stop)
+
+
 def center_crop_or_pad(image, target_h=128, target_w=128):
     """Center crops an image, padding with zeros if it's smaller than the target size."""
     h, w = image.shape
@@ -102,6 +206,7 @@ def load_acdc_data(base_dir, target_size=(128, 128), restrict_to_systole=False):
         try:
             img_obj = sitk.ReadImage(nii_path)
             img_arr = sitk.GetArrayFromImage(img_obj) # (T, Z, Y, X) or similar. Normally ITK is (x,y,z,t) -> numpy (t,z,y,x)
+            spacing_xy = tuple(float(s) for s in img_obj.GetSpacing()[:2])
         except Exception as e:
             print(f"Error loading image for {p}: {e}")
             continue
@@ -117,7 +222,9 @@ def load_acdc_data(base_dir, target_size=(128, 128), restrict_to_systole=False):
             print(f"Skipping ACDC {p}: ES={es_idx} out of range T={T}")
             continue
 
-        for z in range(1, Z - 1):
+        img_arr = _maybe_normalize_volume(img_arr, p)
+        img_arr = _maybe_resample_volume(img_arr, spacing_xy)
+        for z in _middle_slice_range(Z):
             slice_seq = img_arr[:, z, :, :]  # Shape: (T, H, W)
              
             # --- APPLIED FIX: Robust 1st/99th Percentile Normalization ---
@@ -239,6 +346,7 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128), restrict_to_
         try:
             img_obj = sitk.ReadImage(nii_path)
             img_arr = sitk.GetArrayFromImage(img_obj)  # typically (T, Z, H, W)
+            spacing_xy = tuple(float(s) for s in img_obj.GetSpacing()[:2])
         except Exception as e:
             print(f"Error loading {fname}: {e}")
             continue
@@ -253,7 +361,9 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128), restrict_to_
             print(f"Skipping M&M {subject_id}: ES={es_idx} out of range T={T}")
             continue
 
-        for z in range(1, Z - 1):
+        img_arr = _maybe_normalize_volume(img_arr, subject_id)
+        img_arr = _maybe_resample_volume(img_arr, spacing_xy)
+        for z in _middle_slice_range(Z):
             slice_seq = img_arr[:, z, :, :]  # (T, H, W)
 
             # --- APPLIED FIX: Robust 1st/99th Percentile Normalization ---
@@ -435,7 +545,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             continue
 
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))  # (T,Z,H,W)
+            img_arr, spacing_xy = _read_nifti_4d(nii_path)  # (T,Z,H,W)
         except Exception as e:
             print(f"Load error {p}: {e}")
             continue
@@ -449,7 +559,9 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             continue
 
         print(f"ACDC {p} (NOR)  ED={ed_idx}  ES={es_idx}")
-        for z in range(1, Z - 1):
+        img_arr = _maybe_normalize_volume(img_arr, p)
+        img_arr = _maybe_resample_volume(img_arr, spacing_xy)
+        for z in _middle_slice_range(Z):
             slice_seq = img_arr[:, z, :, :]  # (T, H, W)
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -468,7 +580,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
                 continue
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-            
+
             frame_diff = np.mean(np.abs(ed_gray.astype(np.float32) - es_gray.astype(np.float32))) / 255.0
             if frame_diff < 0.01:
                 continue
@@ -501,7 +613,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
         nii_path = os.path.join(mm_training_dir, fname)
 
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))  # (T,Z,H,W)
+            img_arr, spacing_xy = _read_nifti_4d(nii_path)  # (T,Z,H,W)
         except Exception as e:
             print(f"Load error {subject_id}: {e}")
             continue
@@ -515,7 +627,9 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             continue
 
         print(f"M&M {subject_id} (NOR)  ED={ed_idx}  ES={es_idx}")
-        for z in range(1, Z - 1):
+        img_arr = _maybe_normalize_volume(img_arr, subject_id)
+        img_arr = _maybe_resample_volume(img_arr, spacing_xy)
+        for z in _middle_slice_range(Z):
             slice_seq = img_arr[:, z, :, :]  # (T, H, W)
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -613,7 +727,10 @@ def load_reconstructed_sax_data(recon_root, ed_es_csv, target_size=(128, 128)):
             continue
 
         print(f"Recon {case_id}  ED={ed_idx}  ES={es_idx}")
-        for z in range(1, Z - 1):
+        spacing_xy = _spacing_recon_default()
+        cine = _maybe_normalize_volume(cine, case_id)
+        cine = _maybe_resample_volume(cine, spacing_xy)
+        for z in _middle_slice_range(Z):
             slice_seq = cine[:, z, :, :].astype(np.float32)  # (T, H, W)
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -774,7 +891,7 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42,
             return [], [], [], [], []
 
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
+            img_arr, spacing_xy = _read_nifti_4d(nii_path)
         except Exception as e:
             print(f"Error loading {p}: {e}")
             return [], [], [], [], []
@@ -791,7 +908,9 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42,
 
         images, flows, labels, pids, slice_idxs = [], [], [], [], []
 
-        for z in range(1, Z - 1):
+        img_arr = _maybe_normalize_volume(img_arr, p)
+        img_arr = _maybe_resample_volume(img_arr, spacing_xy)
+        for z in _middle_slice_range(Z):
             slice_seq = img_arr[:, z, :, :]  # (T, H, W)
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -940,7 +1059,7 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128),
         nii_path = os.path.join(mm_val_dir, fname)
 
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
+            img_arr, spacing_xy = _read_nifti_4d(nii_path)
         except Exception as e:
             print(f"Error loading {subject_id}: {e}")
             continue
@@ -955,7 +1074,9 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128),
             continue
         print(f"Processing {subject_id} ({pathology})...")
 
-        for z in range(1, Z - 1):
+        img_arr = _maybe_normalize_volume(img_arr, subject_id)
+        img_arr = _maybe_resample_volume(img_arr, spacing_xy)
+        for z in _middle_slice_range(Z):
             slice_seq = img_arr[:, z, :, :]  # (T, H, W)
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -1115,7 +1236,7 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
             return [], [], [], [], []
 
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
+            img_arr, spacing_xy = _read_nifti_4d(nii_path)
         except Exception as e:
             print(f"Error loading {p}: {e}")
             return [], [], [], [], []
@@ -1129,7 +1250,9 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
         images, flows, labels, pids, slice_idxs = [], [], [], [], []
         print(f"  {p} ({group})  ED={ed_idx}  ES={es_idx}")
 
-        for z in range(1, Z - 1):
+        img_arr = _maybe_normalize_volume(img_arr, p)
+        img_arr = _maybe_resample_volume(img_arr, spacing_xy)
+        for z in _middle_slice_range(Z):
             slice_seq = img_arr[:, z, :, :]
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -1254,7 +1377,7 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
         nii_path = os.path.join(mm_val_dir, fname)
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
+            img_arr, spacing_xy = _read_nifti_4d(nii_path)
         except Exception as e:
             print(f"Error loading {subject_id}: {e}")
             continue
@@ -1270,7 +1393,9 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
         print(f"  {subject_id} ({pathology})  ED={ed_idx}  ES={es_idx}")
 
-        for z in range(1, Z - 1):
+        img_arr = _maybe_normalize_volume(img_arr, subject_id)
+        img_arr = _maybe_resample_volume(img_arr, spacing_xy)
+        for z in _middle_slice_range(Z):
             slice_seq = img_arr[:, z, :, :]
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -1385,7 +1510,7 @@ def load_acdc_ed_es_data(acdc_dir, target_size=(128, 128)):
             continue
 
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
+            img_arr, spacing_xy = _read_nifti_4d(nii_path)
         except Exception as e:
             print(f"Load error {p}: {e}")
             continue
@@ -1398,7 +1523,9 @@ def load_acdc_ed_es_data(acdc_dir, target_size=(128, 128)):
             continue
 
         print(f"ACDC {p} (NOR)  ED={ed_idx}  ES={es_idx}")
-        for z in range(1, Z - 1):
+        img_arr = _maybe_normalize_volume(img_arr, p)
+        img_arr = _maybe_resample_volume(img_arr, spacing_xy)
+        for z in _middle_slice_range(Z):
             slice_seq = img_arr[:, z, :, :]
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -1461,7 +1588,7 @@ def load_mm_ed_es_data(mm_training_dir, csv_path, target_size=(128, 128)):
         nii_path = os.path.join(mm_training_dir, fname)
 
         try:
-            img_arr = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
+            img_arr, spacing_xy = _read_nifti_4d(nii_path)
         except Exception as e:
             print(f"Load error {subject_id}: {e}")
             continue
@@ -1474,7 +1601,9 @@ def load_mm_ed_es_data(mm_training_dir, csv_path, target_size=(128, 128)):
             continue
 
         print(f"M&M {subject_id} (NOR)  ED={ed_idx}  ES={es_idx}")
-        for z in range(1, Z - 1):
+        img_arr = _maybe_normalize_volume(img_arr, subject_id)
+        img_arr = _maybe_resample_volume(img_arr, spacing_xy)
+        for z in _middle_slice_range(Z):
             slice_seq = img_arr[:, z, :, :]
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
@@ -1588,7 +1717,10 @@ def load_reconstructed_sax_data_next_frame(recon_root, target_size=(128, 128),
             continue
 
         print(f"Recon {case_id}  T={T}  Z={Z}")
-        for z in range(1, Z - 1):
+        spacing_xy = _spacing_recon_default()
+        cine = _maybe_normalize_volume(cine, case_id)
+        cine = _maybe_resample_volume(cine, spacing_xy)
+        for z in _middle_slice_range(Z):
             slice_seq = cine[:, z, :, :].astype(np.float32)
             p1  = np.percentile(slice_seq, 1)
             p99 = np.percentile(slice_seq, 99)
