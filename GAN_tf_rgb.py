@@ -620,9 +620,11 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                         try:
                             auc_appe_patch = roc_auc_score(binary_labels, per_sample_appe_patch)
                             auc_ed_patch   = roc_auc_score(binary_labels, per_sample_ed_patch)
+                            # Paper eq. (8), §3.5: log(w_F·S_F) + 𝒮·log(w_I·S_I), 𝒮 = 0.2
+                            # Aux (ED) stream plays the role of S_F here: aux-dominant (5:1)
                             combined_patch = (
-                                np.log(np.maximum(per_sample_appe_patch, eps) / max(mu_appe_patch, eps))
-                                + 2.0 * np.log(np.maximum(per_sample_ed_patch, eps) / max(mu_ed_patch, eps))
+                                np.log(np.maximum(per_sample_ed_patch, eps) / max(mu_ed_patch, eps))
+                                + 0.2 * np.log(np.maximum(per_sample_appe_patch, eps) / max(mu_appe_patch, eps))
                             )
                             auc_combined_patch = roc_auc_score(binary_labels, combined_patch)
                             print('  [VAL-AUC-PATCH] appe = %.4f, ed = %.4f, combined = %.4f'

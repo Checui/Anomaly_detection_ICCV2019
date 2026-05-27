@@ -414,8 +414,8 @@ def find_max_patch(diff_map_flow, diff_map_appe, size=16, step=4, plot=False):
     assert size % step == 0
     max_val_mean, std_1, pos_1, std_appe_1, mean_appe_1 = 0, 0, None, 0, 0
     max_val_std, mean_2, pos_2, std_appe_2, mean_appe_2 = 0, 0, None, 0, 0
-    for i in range(0, diff_map_flow.shape[0]-size, step):
-        for j in range(0, diff_map_flow.shape[1]-size, step):
+    for i in range(0, diff_map_flow.shape[0]-size+1, step):
+        for j in range(0, diff_map_flow.shape[1]-size+1, step):
             curr_std = np.std(diff_map_flow[i:i+size, j:j+size])
             curr_mean = np.mean(diff_map_flow[i:i+size, j:j+size])
             curr_std_appe = np.std(diff_map_appe[i:i+size, j:j+size])

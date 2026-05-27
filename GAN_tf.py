@@ -600,9 +600,11 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                         try:
                             auc_appe_patch = roc_auc_score(binary_labels, per_sample_appe_patch)
                             auc_opt_patch  = roc_auc_score(binary_labels, per_sample_opt_patch)
+                            # Paper eq. (8), §3.5: log(w_F·S_F) + 𝒮·log(w_I·S_I), 𝒮 = 0.2
+                            # w_F = 1/μ_flow_patch, w_I = 1/μ_appe_patch → flow-dominant (5:1)
                             combined_patch = (
-                                np.log(np.maximum(per_sample_appe_patch, eps) / max(mu_appe_patch, eps))
-                                + 2.0 * np.log(np.maximum(per_sample_opt_patch, eps) / max(mu_opt_patch, eps))
+                                np.log(np.maximum(per_sample_opt_patch, eps) / max(mu_opt_patch, eps))
+                                + 0.2 * np.log(np.maximum(per_sample_appe_patch, eps) / max(mu_appe_patch, eps))
                             )
                             auc_combined_patch = roc_auc_score(binary_labels, combined_patch)
                             print('  [VAL-AUC-PATCH] appe = %.4f, flow = %.4f, combined = %.4f'
