@@ -88,8 +88,8 @@ Available datasets: `UCSDped2`, `Avenue`, `Belleview`, `Train`, `Exit`, `Entranc
 Both files share the same layer primitives (`conv2d`, `conv_transpose`, `conv2d_Inception`) and overall U-Net structure, built on the TF v1 graph API.
 
 **Generator** — shared Inception-style encoder (`h0`–`h5`), then two independent decoder heads:
-- **Auxiliary decoder** (with skip connections from `h1`–`h4`): predicts optical flow (`GAN_tf`) or the ED frame from ES (`GAN_tf_rgb`). Final output bounded by `tanh`.
-- **Reconstruction decoder** (no skip connections): always reconstructs the input (ES) frame. Final output bounded by `tanh`. No skip connections force a full bottleneck pass, making reconstruction harder for out-of-distribution (anomalous) inputs.
+- **Auxiliary decoder** (with skip connections from `h1`–`h4`): predicts optical flow (`GAN_tf`) or the ED frame from ES (`GAN_tf_rgb`). In `GAN_tf` the flow head has **no output activation (linear)** — GT optical flow is raw pixel displacement (plus a non-negative magnitude channel), not in `[-1, 1]`, so a `tanh` would saturate. In `GAN_tf_rgb` the ED head keeps `tanh` because its target (`scaled_ed`) is already in `[-1, 1]`.
+- **Reconstruction decoder** (no skip connections): always reconstructs the input (ES) frame. Final output bounded by `tanh` (target frame is in `[-1, 1]`). No skip connections force a full bottleneck pass, making reconstruction harder for out-of-distribution (anomalous) inputs.
 - Decoder blocks follow `deconv → BN → leaky_relu → dropout → concat_skip` ordering throughout.
 
 **Discriminator** — PatchGAN-style; takes `concat([frame_true, flow_hat], axis=-1)` as input.
@@ -101,15 +101,15 @@ Both files share the same layer primitives (`conv2d`, `conv_transpose`, `conv2d_
 
 **Anomaly scoring at validation** — three parallel scoring pipelines run every validation epoch:
 
-**Full-frame:** per-sample `loss_appe` and `loss_aux` reduced over all spatial dims. Combined score:
+**Full-frame:** per-sample `loss_appe` and `loss_aux` reduced over all spatial dims. Combined score (original ICCV2019 paper formula, matching `utils.py:339`):
 ```
-combined = log(loss_aux / μ_aux) + 0.2 × log(loss_appe / μ_appe)
+combined = log(loss_appe / μ_appe) + 2 × log(loss_aux / μ_aux)
 ```
-Logged to W&B as `Val_AUC_Appearance`, `Val_AUC_Flow` / `Val_AUC_ED`, `Val_AUC_Combined`.
+`eps`/`np.maximum` guards are applied to each term so a zero error can't produce `log(0) → NaN` and break `roc_auc_score`. Logged to W&B as `Val_AUC_Appearance`, `Val_AUC_Flow` / `Val_AUC_ED`, `Val_AUC_Combined`.
 
 **Patch-based (paper Section 3.5):** raw 2D MSE diff maps `[B, H, W]` computed by reducing over channels only. `compute_patch_scores()` in `utils.py` wraps `find_max_patch()` (16×16 patch, stride 4) to select the patch with highest mean auxiliary MSE, then reads appearance MSE at that same position. Combined score:
 ```
-combined_patch = log(S_F(P̃) / μ_F) + 0.2 × log(S_I(P̃) / μ_I)
+combined_patch = log(S_I(P̃) / μ_I) + 2 × log(S_F(P̃) / μ_F)
 ```
 Logged to W&B as `Val_AUC_Appe_Patch`, `Val_AUC_Flow_Patch` / `Val_AUC_ED_Patch`, `Val_AUC_Combined_Patch`. Printed as `[VAL-AUC-PATCH]`.
 

@@ -198,8 +198,10 @@ def Generator(input_data, is_training, keep_prob, return_layers=False):
         h3fl = G_deconv_bn_dr_relu_concat(h4fl, h3, [b_size, h//4, w//4, filters*4], filter_size, keep_prob, training=is_training, scope='gen_h3fl')
         h2fl = G_deconv_bn_dr_relu_concat(h3fl, h2, [b_size, h//2, w//2, filters*2], filter_size, keep_prob, training=is_training, scope='gen_h2fl')
         h1fl = G_deconv_bn_dr_relu_concat(h2fl, h1, [b_size, h, w, filters], filter_size, keep_prob, training=is_training, scope='gen_h1fl')
-        out_flow_raw = conv2d(h1fl, 3, filter_size=3, stride=1, scope='gen_flow')
-        out_flow = tf.nn.tanh(out_flow_raw)
+        # Linear output: GT optical flow is raw pixel displacement (and a non-negative
+        # magnitude channel), not in [-1, 1], so a tanh here would saturate. The frame
+        # head below keeps tanh because its target is scaled to [-1, 1].
+        out_flow = conv2d(h1fl, 3, filter_size=3, stride=1, scope='gen_flow')
 
         '''Unet DECODER for FRAME'''
         h4fr = G_deconv_bn_dr_relu_concat(h5, None, [b_size, h//8, w//8, filters*4], filter_size, keep_prob, training=is_training, scope='gen_h4fr')
@@ -582,9 +584,11 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                             auc_appe = roc_auc_score(binary_labels, per_sample_appe)
                             auc_opt  = roc_auc_score(binary_labels, per_sample_opt)
                             eps = 1e-10
+                            # Original ICCV2019 paper formula (utils.py:339):
+                            # log(appe/μ_appe) + 2·log(flow/μ_flow)
                             combined_score = (
-                                np.log(np.maximum(per_sample_opt, eps) / max(mu_opt, eps))
-                                + 0.2 * np.log(np.maximum(per_sample_appe, eps) / max(mu_appe, eps))
+                                np.log(np.maximum(per_sample_appe, eps) / max(mu_appe, eps))
+                                + 2.0 * np.log(np.maximum(per_sample_opt, eps) / max(mu_opt, eps))
                             )
                             auc_combined = roc_auc_score(binary_labels, combined_score)
                             print('  [VAL-AUC]  appe = %.4f, flow = %.4f, combined = %.4f'
@@ -597,8 +601,8 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                             auc_appe_patch = roc_auc_score(binary_labels, per_sample_appe_patch)
                             auc_opt_patch  = roc_auc_score(binary_labels, per_sample_opt_patch)
                             combined_patch = (
-                                np.log(np.maximum(per_sample_opt_patch, eps) / max(mu_opt_patch, eps))
-                                + 0.2 * np.log(np.maximum(per_sample_appe_patch, eps) / max(mu_appe_patch, eps))
+                                np.log(np.maximum(per_sample_appe_patch, eps) / max(mu_appe_patch, eps))
+                                + 2.0 * np.log(np.maximum(per_sample_opt_patch, eps) / max(mu_opt_patch, eps))
                             )
                             auc_combined_patch = roc_auc_score(binary_labels, combined_patch)
                             print('  [VAL-AUC-PATCH] appe = %.4f, flow = %.4f, combined = %.4f'
@@ -696,8 +700,8 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                                         _aa = roc_auc_score(pat_binary, pat_appe[a])
                                         _ao = roc_auc_score(pat_binary, pat_opt[a])
                                         _combined_p = (
-                                            np.log(np.maximum(pat_opt[a], eps) / max(mu_opt, eps))
-                                            + 0.2 * np.log(np.maximum(pat_appe[a], eps) / max(mu_appe, eps))
+                                            np.log(np.maximum(pat_appe[a], eps) / max(mu_appe, eps))
+                                            + 2.0 * np.log(np.maximum(pat_opt[a], eps) / max(mu_opt, eps))
                                         )
                                         _ac = roc_auc_score(pat_binary, _combined_p)
                                         patient_aucs[a] = {'appe': _aa, 'opt': _ao, 'combined': _ac}

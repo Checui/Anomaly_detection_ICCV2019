@@ -604,9 +604,11 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                             auc_appe = roc_auc_score(binary_labels, per_sample_appe)
                             auc_ed   = roc_auc_score(binary_labels, per_sample_ed)
                             eps = 1e-10
+                            # Original ICCV2019 paper formula (utils.py:339):
+                            # log(appe/μ_appe) + 2·log(ed/μ_ed)
                             combined_score = (
-                                np.log(np.maximum(per_sample_ed, eps) / max(mu_ed, eps))
-                                + 0.2 * np.log(np.maximum(per_sample_appe, eps) / max(mu_appe, eps))
+                                np.log(np.maximum(per_sample_appe, eps) / max(mu_appe, eps))
+                                + 2.0 * np.log(np.maximum(per_sample_ed, eps) / max(mu_ed, eps))
                             )
                             auc_combined = roc_auc_score(binary_labels, combined_score)
                             print('  [VAL-AUC]  appe = %.4f, ed = %.4f, combined = %.4f'
@@ -619,8 +621,8 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                             auc_appe_patch = roc_auc_score(binary_labels, per_sample_appe_patch)
                             auc_ed_patch   = roc_auc_score(binary_labels, per_sample_ed_patch)
                             combined_patch = (
-                                np.log(np.maximum(per_sample_ed_patch, eps) / max(mu_ed_patch, eps))
-                                + 0.2 * np.log(np.maximum(per_sample_appe_patch, eps) / max(mu_appe_patch, eps))
+                                np.log(np.maximum(per_sample_appe_patch, eps) / max(mu_appe_patch, eps))
+                                + 2.0 * np.log(np.maximum(per_sample_ed_patch, eps) / max(mu_ed_patch, eps))
                             )
                             auc_combined_patch = roc_auc_score(binary_labels, combined_patch)
                             print('  [VAL-AUC-PATCH] appe = %.4f, ed = %.4f, combined = %.4f'
@@ -718,8 +720,8 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                                         _aa = roc_auc_score(pat_binary, pat_appe[a])
                                         _ae = roc_auc_score(pat_binary, pat_ed[a])
                                         _combined_p = (
-                                            np.log(np.maximum(pat_ed[a], eps) / max(mu_ed, eps))
-                                            + 0.2 * np.log(np.maximum(pat_appe[a], eps) / max(mu_appe, eps))
+                                            np.log(np.maximum(pat_appe[a], eps) / max(mu_appe, eps))
+                                            + 2.0 * np.log(np.maximum(pat_ed[a], eps) / max(mu_ed, eps))
                                         )
                                         _ac = roc_auc_score(pat_binary, _combined_p)
                                         patient_aucs[a] = {'appe': _aa, 'ed': _ae, 'combined': _ac}
