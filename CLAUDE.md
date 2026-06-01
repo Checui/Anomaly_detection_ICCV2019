@@ -24,7 +24,9 @@ Key dependency: `tensorflow==2.12.0`, used via TF v1 compatibility mode (`tf.com
 |---|---|---|
 | `--model_type` | `flow` (default) / `rgb` | Which GAN backend: `GAN_tf` (optical flow head) or `GAN_tf_rgb` (ED-frame prediction head) |
 | `--datasets` | `ACDC` `MM` `RECON` (one or more, space-separated) | Training datasets to load; `RECON` requires `--recon_dir` |
-| `--frame_mode` | `ed_es` (default) / `next_frame` / `next_frame_systole` | ED/ES pairs only · all consecutive frame pairs · consecutive pairs restricted to t ∈ [ED, ES−1] (systolic phase only; patients with ES ≤ ED are skipped). For RECON, the ED/ES CSV (`--recon_csv` or `<recon_dir>/segmentation/ed_es_frames.csv`) is required when using `next_frame_systole`; cases missing from the CSV are skipped. Validation also restricts to the same systolic range. |
+| `--frame_mode` | `ed_es` (default) / `es_ed` / `next_frame` / `next_frame_systole` | `ed_es`: ED/ES pairs with the **ES** frame as model input (reconstruct ES; aux predicts ED / flow ES→ED). `es_ed`: the **inverse** — same ED/ES pairs but the **ED** frame is the model input (reconstruct ED; aux predicts ES / flow ED→ES). `next_frame`: all consecutive frame pairs. `next_frame_systole`: consecutive pairs restricted to t ∈ [ED, ES−1] (systolic phase only; patients with ES ≤ ED are skipped). For RECON, the ED/ES CSV (`--recon_csv` or `<recon_dir>/segmentation/ed_es_frames.csv`) is required when using `next_frame_systole`; cases missing from the CSV are skipped. Validation also restricts to the same systolic range. |
+
+> **`es_ed` implementation note:** `es_ed` reuses the `ed_es` loader functions; `run_model.py` only flips a module-level direction flag via `dl_flow.set_edes_direction('ed')` / `dl_rgb.set_edes_direction('ed')` (default `'es'`). The flag swaps which phase becomes the optical-flow source / reconstruction input inside the ED/ES extractors (`_edes_flow_inputs` in `data_loader.py`, `_edes_input_target` in `data_loader_rgb.py`). Because the GAN code is direction-agnostic, the W&B aux keys still read `_Flow` / `_ED` and the internal `es_images` array now physically holds ED frames in `es_ed` mode — distinguish runs by the checkpoint folder (`..._ES_ED_...`), not by those names.
 
 Optional orientation-normalisation flags (default off, both loaders pass-through when disabled):
 
@@ -107,11 +109,11 @@ combined = log(loss_appe / μ_appe) + 2 × log(loss_aux / μ_aux)
 ```
 `eps`/`np.maximum` guards are applied to each term so a zero error can't produce `log(0) → NaN` and break `roc_auc_score`. Logged to W&B as `Val_AUC_Appearance`, `Val_AUC_Flow` / `Val_AUC_ED`, `Val_AUC_Combined`.
 
-**Patch-based (paper Section 3.5):** raw 2D MSE diff maps `[B, H, W]` computed by reducing over channels only. `compute_patch_scores()` in `utils.py` wraps `find_max_patch()` (16×16 patch, stride 4) to select the patch with highest mean auxiliary MSE, then reads appearance MSE at that same position. Combined score:
+**Patch-based (paper Section 3.5):** raw 2D MSE diff maps `[B, H, W]` computed by reducing over channels only. `compute_patch_scores()` in `utils.py` wraps `find_max_patch()` (16×16 patch, stride 4) to select the patch with highest mean auxiliary MSE, then reads appearance MSE at that same position. `find_max_patch`'s sliding window covers the full frame (loop bound `shape − size + 1`, so the edge-flush patch is included). Combined score is the paper's eq. (8) with `𝒮 = 0.2` on the appearance term (flow/aux-dominant 5:1):
 ```
-combined_patch = log(S_I(P̃) / μ_I) + 2 × log(S_F(P̃) / μ_F)
+combined_patch = log(S_F(P̃) / μ_F) + 0.2 × log(S_I(P̃) / μ_I)
 ```
-Logged to W&B as `Val_AUC_Appe_Patch`, `Val_AUC_Flow_Patch` / `Val_AUC_ED_Patch`, `Val_AUC_Combined_Patch`. Printed as `[VAL-AUC-PATCH]`.
+This differs from the full-frame combined score (2:1 aux:appe, `utils.py:339`): the patch path follows the paper's eq. (8) 𝒮=0.2 weighting, not the full-frame formula. Logged to W&B as `Val_AUC_Appe_Patch`, `Val_AUC_Flow_Patch` / `Val_AUC_ED_Patch`, `Val_AUC_Combined_Patch`. Printed as `[VAL-AUC-PATCH]`.
 
 **Per-disease one-vs-NOR AUC:** for each disease label (MINF, DCM, HCM, RV), computes AUC treating that disease vs NOR only. Logged as `Val_AUC_<DISEASE>_Appearance` and `Val_AUC_<DISEASE>_Flow` / `_ED`. Printed as `[VAL-AUC-<DISEASE>]`.
 

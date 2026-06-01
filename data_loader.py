@@ -84,6 +84,41 @@ def _maybe_resample_volume(volume, spacing_xy):
     return _spacing_apply_to_volume(volume, spacing_xy)
 
 
+# ── ED/ES extraction direction ──────────────────────────────────────────────
+#
+# Controls which cardiac phase is the model INPUT when extracting ED/ES pairs.
+#   'es' (default): input = ES frame, optical flow points ES -> ED.  This is the
+#                   original ICCV2019 cardiac setup (the "ed_es" frame mode).
+#   'ed'          : inverse — input = ED frame, optical flow points ED -> ES
+#                   (the "es_ed" frame mode).
+# Set once per run by run_model.py via set_edes_direction(); both loaders keep
+# independent copies of this global.
+_EDES_INPUT_PHASE = 'es'
+
+
+def set_edes_direction(input_phase):
+    """Select which phase is the model input for ED/ES pair extraction.
+
+    input_phase='es' (default): input = ES frame, target/flow points ES -> ED.
+    input_phase='ed'          : input = ED frame, target/flow points ED -> ES.
+    Any other value falls back to 'es'.
+    """
+    global _EDES_INPUT_PHASE
+    _EDES_INPUT_PHASE = 'ed' if str(input_phase).lower() == 'ed' else 'es'
+
+
+def _edes_flow_inputs(ed_rgb, es_rgb, ed_gray, es_gray):
+    """Return (input_rgb, src_gray, dst_gray) honouring the ED/ES direction.
+
+    The model input frame is always the optical-flow *source*; flow is computed
+    source -> dst.  Default ('es'): input ES, flow ES -> ED.  Inverse ('ed'):
+    input ED, flow ED -> ES.
+    """
+    if _EDES_INPUT_PHASE == 'ed':
+        return ed_rgb, ed_gray, es_gray
+    return es_rgb, es_gray, ed_gray
+
+
 def _read_nifti_4d(nii_path):
     """Load a NIfTI file, returning (array, (sx, sy)) in mm/px.
 
@@ -571,10 +606,11 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
 
             es_gray = (es_frame_rgb[:, :, 0] * 255).astype(np.uint8)
             ed_gray = (ed_frame_rgb[:, :, 0] * 255).astype(np.uint8)
+            input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_frame_rgb, es_frame_rgb, ed_gray, es_gray)
 
             try:
                 flow = cv2.calcOpticalFlowFarneback(
-                    es_gray, ed_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
+                    src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {p} z={z}: {e}")
                 continue
@@ -587,7 +623,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
 
             flow_3ch = np.dstack((flow, mag))  # (H, W, 3)
 
-            all_images.append(es_frame_rgb)
+            all_images.append(input_rgb)
             all_flows.append(flow_3ch)
 
     print(f"ACDC NOR ED/ES samples: {len(all_images)}")
@@ -639,23 +675,24 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
 
             es_gray = (es_frame_rgb[:, :, 0] * 255).astype(np.uint8)
             ed_gray = (ed_frame_rgb[:, :, 0] * 255).astype(np.uint8)
+            input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_frame_rgb, es_frame_rgb, ed_gray, es_gray)
 
             try:
                 flow = cv2.calcOpticalFlowFarneback(
-                    es_gray, ed_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
+                    src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {subject_id} z={z}: {e}")
                 continue
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-            
+
             frame_diff = np.mean(np.abs(ed_gray.astype(np.float32) - es_gray.astype(np.float32))) / 255.0
             if frame_diff < 0.01:
                 continue
 
             flow_3ch = np.dstack((flow, mag))
 
-            all_images.append(es_frame_rgb)
+            all_images.append(input_rgb)
             all_flows.append(flow_3ch)
 
     mm_count = len(all_images) - acdc_count
@@ -740,9 +777,10 @@ def load_reconstructed_sax_data(recon_root, ed_es_csv, target_size=(128, 128)):
 
             es_gray = (es_rgb[:, :, 0] * 255).astype(np.uint8)
             ed_gray = (ed_rgb[:, :, 0] * 255).astype(np.uint8)
+            input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_rgb, es_rgb, ed_gray, es_gray)
             try:
                 flow = cv2.calcOpticalFlowFarneback(
-                    es_gray, ed_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
+                    src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {case_id} z={z}: {e}")
                 continue
@@ -752,7 +790,7 @@ def load_reconstructed_sax_data(recon_root, ed_es_csv, target_size=(128, 128)):
             if frame_diff < 0.001:
                 continue
 
-            all_images.append(es_rgb)
+            all_images.append(input_rgb)
             all_flows.append(np.dstack((flow, mag)))
 
     print(f"Reconstructed SAX samples: {len(all_images)}")
@@ -1262,23 +1300,24 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
 
             es_gray = (es_rgb[:, :, 0] * 255).astype(np.uint8)
             ed_gray = (ed_rgb[:, :, 0] * 255).astype(np.uint8)
+            input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_rgb, es_rgb, ed_gray, es_gray)
 
             try:
                 flow = cv2.calcOpticalFlowFarneback(
-                    es_gray, ed_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
+                    src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {p} z={z}: {e}")
                 continue
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-            
+
             frame_diff = np.mean(np.abs(ed_gray.astype(np.float32) - es_gray.astype(np.float32))) / 255.0
             if frame_diff < 0.01:
                 continue
 
             flow_3ch = np.dstack((flow, mag))
 
-            images.append(es_rgb)
+            images.append(input_rgb)
             flows.append(flow_3ch)
             labels.append(group)
             pids.append(p)
@@ -1405,23 +1444,24 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
             es_gray = (es_rgb[:, :, 0] * 255).astype(np.uint8)
             ed_gray = (ed_rgb[:, :, 0] * 255).astype(np.uint8)
+            input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_rgb, es_rgb, ed_gray, es_gray)
 
             try:
                 flow = cv2.calcOpticalFlowFarneback(
-                    es_gray, ed_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
+                    src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {subject_id} z={z}: {e}")
                 continue
 
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-            
+
             frame_diff = np.mean(np.abs(ed_gray.astype(np.float32) - es_gray.astype(np.float32))) / 255.0
             if frame_diff < 0.01:
                 continue
 
             flow_3ch = np.dstack((flow, mag))
 
-            all_images.append(es_rgb)
+            all_images.append(input_rgb)
             all_flows.append(flow_3ch)
             all_labels.append(pathology)
             all_pids.append(subject_id)
@@ -1535,10 +1575,11 @@ def load_acdc_ed_es_data(acdc_dir, target_size=(128, 128)):
 
             es_gray = (es_rgb[:, :, 0] * 255).astype(np.uint8)
             ed_gray = (ed_rgb[:, :, 0] * 255).astype(np.uint8)
+            input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_rgb, es_rgb, ed_gray, es_gray)
 
             try:
                 flow = cv2.calcOpticalFlowFarneback(
-                    es_gray, ed_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
+                    src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {p} z={z}: {e}")
                 continue
@@ -1548,7 +1589,7 @@ def load_acdc_ed_es_data(acdc_dir, target_size=(128, 128)):
             if frame_diff < 0.01:
                 continue
 
-            all_images.append(es_rgb)
+            all_images.append(input_rgb)
             all_flows.append(np.dstack((flow, mag)))
 
     print(f"ACDC NOR ED/ES samples: {len(all_images)}")
@@ -1613,10 +1654,11 @@ def load_mm_ed_es_data(mm_training_dir, csv_path, target_size=(128, 128)):
 
             es_gray = (es_rgb[:, :, 0] * 255).astype(np.uint8)
             ed_gray = (ed_rgb[:, :, 0] * 255).astype(np.uint8)
+            input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_rgb, es_rgb, ed_gray, es_gray)
 
             try:
                 flow = cv2.calcOpticalFlowFarneback(
-                    es_gray, ed_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
+                    src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {subject_id} z={z}: {e}")
                 continue
@@ -1626,7 +1668,7 @@ def load_mm_ed_es_data(mm_training_dir, csv_path, target_size=(128, 128)):
             if frame_diff < 0.01:
                 continue
 
-            all_images.append(es_rgb)
+            all_images.append(input_rgb)
             all_flows.append(np.dstack((flow, mag)))
 
     print(f"M&M NOR ED/ES samples: {len(all_images)}")

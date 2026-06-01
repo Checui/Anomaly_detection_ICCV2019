@@ -58,9 +58,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         '--frame_mode', type=str, default='ed_es',
-        choices=['ed_es', 'next_frame', 'next_frame_systole'],
+        choices=['ed_es', 'es_ed', 'next_frame', 'next_frame_systole'],
         help=(
-            '"ed_es" (default): use only End-Diastole/End-Systole frame pairs. '
+            '"ed_es" (default): ED/ES pairs with the ES frame as model input '
+            '(flow ES->ED / predict ED). '
+            '"es_ed": inverse of ed_es — ED frame as model input '
+            '(flow ED->ES / predict ES). '
             '"next_frame": use all consecutive frame pairs. '
             '"next_frame_systole": use consecutive pairs (t, t+1) for '
             't in [ED, ES-1] only (systolic contraction phase). Patients '
@@ -154,6 +157,19 @@ if __name__ == "__main__":
         dl_flow.set_spacing_normalization(False)
         dl_rgb.set_spacing_normalization(False)
 
+    # ── ED/ES direction (only meaningful for ed_es / es_ed frame modes) ───────
+    # "es_ed" reuses the ed_es loaders but flips which phase is the model input:
+    #   ed_es -> input ES, predict ED   (flow ES->ED)
+    #   es_ed -> input ED, predict ES   (flow ED->ES)
+    edes_direction = 'ed' if args.frame_mode == 'es_ed' else 'es'
+    dl_flow.set_edes_direction(edes_direction)
+    dl_rgb.set_edes_direction(edes_direction)
+    # es_ed loads identical pairs to ed_es; only the input/target roles differ,
+    # so reuse the ed_es loader-dispatch keys.
+    loader_frame_mode = 'ed_es' if args.frame_mode == 'es_ed' else args.frame_mode
+    print(f"[run_model] frame_mode={args.frame_mode} (ED/ES input phase: "
+          f"{'ED' if edes_direction == 'ed' else 'ES'})")
+
     # ------------------------------------------------------------------
     # 1. Build per-dataset loader dispatch tables
     # ------------------------------------------------------------------
@@ -212,7 +228,7 @@ if __name__ == "__main__":
 
     for ds in args.datasets:
         print(f"\n=== Loading {ds} [{args.frame_mode}] ({args.model_type} mode) ===")
-        p1, p2 = loaders[(ds, args.frame_mode)]()
+        p1, p2 = loaders[(ds, loader_frame_mode)]()
         print(f"{ds}: {len(p1)} samples loaded.")
         if len(p1) > 0:
             part1_list.append(p1)
@@ -235,7 +251,8 @@ if __name__ == "__main__":
     # 3. Load VALIDATION data (matches frame_mode: ed_es or next_frame)
     # ------------------------------------------------------------------
     val_mode_label = {
-        'ed_es': 'ED/ES',
+        'ed_es': 'ED/ES (input ES -> predict ED)',
+        'es_ed': 'ES/ED (input ED -> predict ES)',
         'next_frame': 'next_frame',
         'next_frame_systole': 'next_frame (systole only)',
     }[args.frame_mode]
@@ -265,6 +282,7 @@ if __name__ == "__main__":
             _val_mm   = dl_rgb.load_mm_validation_ed_es_data
 
     val_parts_p1, val_parts_p2, val_labels, val_pids, val_slice_idxs = [], [], [], [], []
+    val_dataset_ids = []
 
     if 'ACDC' in args.val_datasets:
         # Use the ENTIRE ACDC test set (all 50 patients) for validation —
@@ -290,6 +308,7 @@ if __name__ == "__main__":
             val_labels.extend(acdc_val_labels)
             val_pids.extend(acdc_val_pids)
             val_slice_idxs.extend(acdc_val_slcs)
+            val_dataset_ids.extend(['ACDC'] * len(acdc_val_p1))
 
     if 'MM' in args.val_datasets:
         mm_val_p1, mm_val_p2, mm_val_labels, mm_val_pids, mm_val_slcs = _val_mm(
@@ -302,12 +321,14 @@ if __name__ == "__main__":
             val_labels.extend(mm_val_labels)
             val_pids.extend(mm_val_pids)
             val_slice_idxs.extend(mm_val_slcs)
+            val_dataset_ids.extend(['MM'] * len(mm_val_p1))
 
     if val_parts_p1:
         val_p1 = np.concatenate(val_parts_p1, axis=0)
         val_p2 = np.concatenate(val_parts_p2, axis=0)
     else:
         val_p1, val_p2, val_labels, val_pids, val_slice_idxs = None, None, None, None, None
+        val_dataset_ids = None
 
     if val_p1 is not None:
         from collections import Counter
@@ -338,6 +359,7 @@ if __name__ == "__main__":
             val_labels=val_labels,
             val_pids=val_pids,
             val_slice_idxs=val_slice_idxs,
+            val_dataset_ids=val_dataset_ids,
             lw_adv=args.lw_adv,
             lw_appe=args.lw_appe,
             lw_aux=args.lw_aux,
@@ -355,6 +377,7 @@ if __name__ == "__main__":
             val_labels=val_labels,
             val_pids=val_pids,
             val_slice_idxs=val_slice_idxs,
+            val_dataset_ids=val_dataset_ids,
             lw_adv=args.lw_adv,
             lw_appe=args.lw_appe,
             lw_aux=args.lw_aux,

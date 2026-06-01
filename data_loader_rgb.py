@@ -75,6 +75,38 @@ def _maybe_resample_volume(volume, spacing_xy):
     return _spacing_apply_to_volume(volume, spacing_xy)
 
 
+# ── ED/ES extraction direction ──────────────────────────────────────────────
+#
+# Controls which cardiac phase is the model INPUT when extracting ED/ES pairs.
+#   'es' (default): input = ES frame, reconstruction target = ED frame.  This is
+#                   the original cardiac setup (the "ed_es" frame mode).
+#   'ed'          : inverse — input = ED frame, target = ES frame (the "es_ed"
+#                   frame mode).
+# Set once per run by run_model.py via set_edes_direction().
+_EDES_INPUT_PHASE = 'es'
+
+
+def set_edes_direction(input_phase):
+    """Select which phase is the model input for ED/ES pair extraction.
+
+    input_phase='es' (default): input = ES frame, target = ED frame.
+    input_phase='ed'          : input = ED frame, target = ES frame.
+    Any other value falls back to 'es'.
+    """
+    global _EDES_INPUT_PHASE
+    _EDES_INPUT_PHASE = 'ed' if str(input_phase).lower() == 'ed' else 'es'
+
+
+def _edes_input_target(ed_rgb, es_rgb):
+    """Return (input_rgb, target_rgb) honouring the ED/ES direction.
+
+    Default ('es'): input ES, target ED.  Inverse ('ed'): input ED, target ES.
+    """
+    if _EDES_INPUT_PHASE == 'ed':
+        return ed_rgb, es_rgb
+    return es_rgb, ed_rgb
+
+
 def _middle_slice_range(Z, frac=0.2):
     """Range covering the middle (1 - 2*frac) of Z slices.
 
@@ -300,10 +332,11 @@ def extract_edes_pairs(img_arr,mask_arr, ed_idx, es_idx, target_size=(128, 128),
         # resize
         es_rgb = normalize_frame_to_rgb(slice_seq[es_idx], p1, p99, 0, 0, target_size)
         ed_rgb = normalize_frame_to_rgb(slice_seq[ed_idx], p1, p99, 0, 0, target_size)
+        input_rgb, target_rgb = _edes_input_target(ed_rgb, es_rgb)
 
         if np.mean(np.abs(ed_rgb - es_rgb)) >= motion_threshold:
-            images.append(es_rgb)
-            target_frames.append(ed_rgb)
+            images.append(input_rgb)
+            target_frames.append(target_rgb)
             slice_idxs.append(z)
 
     if return_slice_idxs:
@@ -871,10 +904,11 @@ def load_reconstructed_sax_data_rgb(recon_root, ed_es_csv, target_size=(128, 128
 
             es_rgb = normalize_frame_to_rgb(slice_seq[es_idx], p1, p99, 0, 0, target_size)
             ed_rgb = normalize_frame_to_rgb(slice_seq[ed_idx], p1, p99, 0, 0, target_size)
+            input_rgb, target_rgb = _edes_input_target(ed_rgb, es_rgb)
 
             if np.mean(np.abs(ed_rgb - es_rgb)) >= motion_threshold:
-                all_es_images.append(es_rgb)
-                all_ed_images.append(ed_rgb)
+                all_es_images.append(input_rgb)
+                all_ed_images.append(target_rgb)
 
     print(f"Reconstructed SAX RGB samples: {len(all_es_images)}")
     return _to_array(all_es_images), _to_array(all_ed_images)
