@@ -246,7 +246,7 @@ def Discriminator(frame_true, flow_hat, is_training, reuse=False, return_middle_
 
 def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max_epoch, dataset_name='', start_model_idx=0, batch_size=16,
                                      val_es_images=None, val_ed_images=None, val_labels=None,
-                                     val_pids=None, val_slice_idxs=None,
+                                     val_pids=None, val_slice_idxs=None, val_dataset_ids=None,
                                      lw_adv=0.25, lw_appe=1.0, lw_aux=2.0):
     """Train the model: ES->ED frame prediction + ES reconstruction.
     
@@ -567,6 +567,7 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                 auc_appe_patch = auc_ed_patch = auc_combined_patch = np.nan
                 patient_aucs = {}
                 per_disease_pat_aucs = {}
+                _per_dataset_aucs = {}
 
                 if val_labels is not None and len(val_labels) == len(val_es_images):
                     labels_arr = np.array(val_labels)
@@ -648,6 +649,23 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                                           % (_disease, _auc_d_appe, _auc_d_aux))
                                 except ValueError:
                                     pass
+
+                        # ── Per-dataset AUC (NOR vs rest within each dataset) ─
+                        if (val_dataset_ids is not None
+                                and len(val_dataset_ids) == len(val_es_images)):
+                            ds_arr = np.array(val_dataset_ids)
+                            for _ds in sorted(np.unique(ds_arr)):
+                                _mask_ds = (ds_arr == _ds)
+                                _bin_ds  = (labels_arr[_mask_ds] != 'NOR').astype(int)
+                                if np.any(_bin_ds) and not np.all(_bin_ds):
+                                    try:
+                                        _auc_ds_appe = roc_auc_score(_bin_ds, per_sample_appe[_mask_ds])
+                                        _auc_ds_aux  = roc_auc_score(_bin_ds, per_sample_ed[_mask_ds])
+                                        _per_dataset_aucs[_ds] = (_auc_ds_appe, _auc_ds_aux)
+                                        print('  [VAL-AUC-DS-%s] appe = %.4f, ed = %.4f  (%d samples)'
+                                              % (_ds, _auc_ds_appe, _auc_ds_aux, np.sum(_mask_ds)))
+                                    except ValueError:
+                                        pass
 
                         # ── Optimal appearance weight search ──────────────────
                         _best_auc, _best_w = 0.0, 0.2
@@ -767,6 +785,9 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
                 for _disease, (_auc_da, _auc_dx) in _per_disease_aucs.items():
                     log_dict[f'Val_AUC_{_disease}_Appearance'] = _auc_da
                     log_dict[f'Val_AUC_{_disease}_ED']         = _auc_dx
+                for _ds, (_auc_dsa, _auc_dsx) in _per_dataset_aucs.items():
+                    log_dict[f'Val_AUC_Dataset_{_ds}_Appearance'] = _auc_dsa
+                    log_dict[f'Val_AUC_Dataset_{_ds}_ED']         = _auc_dsx
                 log_dict['Val_AUC_BestCombined'] = _best_auc
                 log_dict['Val_BestWeight_Appe']  = _best_w
                 # Patient-level AUCs
