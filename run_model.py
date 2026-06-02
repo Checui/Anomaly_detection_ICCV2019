@@ -66,8 +66,9 @@ if __name__ == "__main__":
             '(flow ED->ES / predict ES). '
             '"next_frame": use all consecutive frame pairs. '
             '"next_frame_systole": use consecutive pairs (t, t+1) for '
-            't in [ED, ES-1] only (systolic contraction phase). Patients '
-            'with ES <= ED are skipped.'
+            't in [ED, ES-1] (systolic contraction phase). When ES <= ED the '
+            'true ED lies after ES in the cine, so the window falls back to '
+            'frames 0..ES; only ES == 0 (no preceding frame) is skipped.'
         )
     )
 

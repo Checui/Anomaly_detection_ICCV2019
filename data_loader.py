@@ -228,9 +228,11 @@ def load_acdc_data(base_dir, target_size=(128, 128), restrict_to_systole=False):
             except (KeyError, ValueError) as e:
                 print(f"Skipping ACDC {p}: missing ED/ES ({e})")
                 continue
-            if es_idx <= ed_idx:
-                print(f"Skipping ACDC {p}: ES ({es_idx}) <= ED ({ed_idx})")
+            if es_idx <= 0:
+                print(f"Skipping ACDC {p}: ES ({es_idx}) has no preceding systolic frames")
                 continue
+            if es_idx <= ed_idx:
+                print(f"ACDC {p}: ES ({es_idx}) <= ED ({ed_idx}); systole fallback uses frames 0..ES")
 
         print(f"Processing {p} (NOR)...")
         # Load 4D
@@ -303,7 +305,7 @@ def load_acdc_data(base_dir, target_size=(128, 128), restrict_to_systole=False):
             processed_frames_arr = np.array(processed_frames) # (T, 128, 128, 3)
 
             # Compute flows and pairs
-            t_range = range(ed_idx, es_idx) if restrict_to_systole else range(T - 1)
+            t_range = range(ed_idx if ed_idx < es_idx else 0, es_idx) if restrict_to_systole else range(T - 1)
             for t in t_range:
                 prev_gray = (processed_frames_arr[t, :, :, 0] * 255).astype(np.uint8)
                 next_gray = (processed_frames_arr[t+1, :, :, 0] * 255).astype(np.uint8)
@@ -371,9 +373,11 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128), restrict_to_
         ed_idx = es_idx = None
         if restrict_to_systole:
             ed_idx, es_idx = nor_info[subject_id]
-            if es_idx <= ed_idx:
-                print(f"Skipping M&M {subject_id}: ES ({es_idx}) <= ED ({ed_idx})")
+            if es_idx <= 0:
+                print(f"Skipping M&M {subject_id}: ES ({es_idx}) has no preceding systolic frames")
                 continue
+            if es_idx <= ed_idx:
+                print(f"M&M {subject_id}: ES ({es_idx}) <= ED ({ed_idx}); systole fallback uses frames 0..ES")
 
         print(f"Processing {subject_id} (M&M NOR)...")
         nii_path = os.path.join(mm_training_dir, fname)
@@ -430,7 +434,7 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128), restrict_to_
 
             processed_frames_arr = np.array(processed_frames)  # (T, H, W, 3)
 
-            t_range = range(ed_idx, es_idx) if restrict_to_systole else range(T - 1)
+            t_range = range(ed_idx if ed_idx < es_idx else 0, es_idx) if restrict_to_systole else range(T - 1)
             for t in t_range:
                 prev_gray = (processed_frames_arr[t,   :, :, 0] * 255).astype(np.uint8)
                 next_gray = (processed_frames_arr[t+1, :, :, 0] * 255).astype(np.uint8)
@@ -920,9 +924,11 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42,
             except (KeyError, ValueError) as e:
                 print(f"Skipping ACDC {p}: missing ED/ES ({e})")
                 return [], [], [], [], []
-            if es_idx <= ed_idx:
-                print(f"Skipping ACDC {p}: ES ({es_idx}) <= ED ({ed_idx})")
+            if es_idx <= 0:
+                print(f"Skipping ACDC {p}: ES ({es_idx}) has no preceding systolic frames")
                 return [], [], [], [], []
+            if es_idx <= ed_idx:
+                print(f"ACDC {p}: ES ({es_idx}) <= ED ({ed_idx}); systole fallback uses frames 0..ES")
 
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
         if not os.path.exists(nii_path):
@@ -973,7 +979,7 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42,
 
             processed_frames_arr = np.array(processed_frames)  # (T, H, W, 3)
 
-            t_range = range(ed_idx, es_idx) if restrict_to_systole else range(T - 1)
+            t_range = range(ed_idx if ed_idx < es_idx else 0, es_idx) if restrict_to_systole else range(T - 1)
             for t in t_range:
                 prev_gray = (processed_frames_arr[t,   :, :, 0] * 255).astype(np.uint8)
                 next_gray = (processed_frames_arr[t+1, :, :, 0] * 255).astype(np.uint8)
@@ -1052,7 +1058,8 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128),
     target_size : tuple  (H, W) resize target, default (128, 128).
     restrict_to_systole : bool
         If True, only emit pairs (t, t+1) for t ∈ [ed_idx, es_idx − 1].  Subjects
-        missing ED/ES or with es ≤ ed are skipped.
+        missing ED/ES are skipped.  When es ≤ ed the window falls back to frames
+        0..ES; only es_idx == 0 (no preceding frame) is skipped.
 
     Returns
     -------
@@ -1090,9 +1097,11 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128),
             if ed_idx is None:
                 print(f"Skipping M&M {subject_id}: not in CSV (no ED/ES)")
                 continue
-            if es_idx <= ed_idx:
-                print(f"Skipping M&M {subject_id}: ES ({es_idx}) <= ED ({ed_idx})")
+            if es_idx <= 0:
+                print(f"Skipping M&M {subject_id}: ES ({es_idx}) has no preceding systolic frames")
                 continue
+            if es_idx <= ed_idx:
+                print(f"M&M {subject_id}: ES ({es_idx}) <= ED ({ed_idx}); systole fallback uses frames 0..ES")
 
         nii_path = os.path.join(mm_val_dir, fname)
 
@@ -1139,7 +1148,7 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128),
 
             processed_frames_arr = np.array(processed_frames)  # (T, H, W, 3)
 
-            t_range = range(ed_idx, es_idx) if restrict_to_systole else range(T - 1)
+            t_range = range(ed_idx if ed_idx < es_idx else 0, es_idx) if restrict_to_systole else range(T - 1)
             for t in t_range:
                 prev_gray = (processed_frames_arr[t,   :, :, 0] * 255).astype(np.uint8)
                 next_gray = (processed_frames_arr[t+1, :, :, 0] * 255).astype(np.uint8)
@@ -1698,7 +1707,8 @@ def load_reconstructed_sax_data_next_frame(recon_root, target_size=(128, 128),
     restrict_to_systole : bool
         If True, only emit pairs (t, t+1) for t ∈ [ed_idx, es_idx − 1] so the
         resulting frames cover the systolic contraction phase only.  Requires
-        ed_es_csv.  Cases missing from the CSV or with es ≤ ed are skipped.
+        ed_es_csv.  Cases missing from the CSV are skipped.  When es ≤ ed the
+        window falls back to frames 0..ES; only es_idx == 0 is skipped.
     ed_es_csv : str | None
         Path to segmentation/ed_es_frames.csv (columns: case_id, ed_frame,
         es_frame).  Required when restrict_to_systole=True; ignored otherwise.
@@ -1744,9 +1754,11 @@ def load_reconstructed_sax_data_next_frame(recon_root, target_size=(128, 128),
                 print(f"Skipping Recon {case_id}: not in ED/ES CSV.")
                 continue
             ed_idx, es_idx = ed_es_map[case_id]
-            if es_idx <= ed_idx:
-                print(f"Skipping Recon {case_id}: ES ({es_idx}) <= ED ({ed_idx})")
+            if es_idx <= 0:
+                print(f"Skipping Recon {case_id}: ES ({es_idx}) has no preceding systolic frames")
                 continue
+            if es_idx <= ed_idx:
+                print(f"Recon {case_id}: ES ({es_idx}) <= ED ({ed_idx}); systole fallback uses frames 0..ES")
 
         cine = np.load(os.path.join(recon_root, fname))  # (T, Z, H, W)
         if cine.ndim != 4:
@@ -1772,7 +1784,7 @@ def load_reconstructed_sax_data_next_frame(recon_root, target_size=(128, 128),
                 for t in range(T)
             ]
 
-            t_range = range(ed_idx, es_idx) if restrict_to_systole else range(T - 1)
+            t_range = range(ed_idx if ed_idx < es_idx else 0, es_idx) if restrict_to_systole else range(T - 1)
             for t in t_range:
                 prev_gray = (processed_frames[t][:, :, 0] * 255).astype(np.uint8)
                 next_gray = (processed_frames[t + 1][:, :, 0] * 255).astype(np.uint8)

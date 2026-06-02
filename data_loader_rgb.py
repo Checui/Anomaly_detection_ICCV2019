@@ -278,16 +278,21 @@ def extract_consecutive_pairs(img_arr, mask_arr, target_size=(128, 128), return_
 
 def extract_consecutive_pairs_systole(img_arr, mask_arr, ed_idx, es_idx,
                                        target_size=(128, 128), return_slice_idxs=False):
-    """Extract every (t, t+1) frame pair with t in [ed_idx, es_idx - 1].
+    """Extract every (t, t+1) frame pair across the systolic contraction.
 
     Restricts emission to the systolic contraction phase (ED→ES).  Returns
-    empty lists if es_idx <= ed_idx or max(ed_idx, es_idx) >= T.
+    empty lists only if ES has no preceding frame (es_idx == 0) or es_idx >= T.
+    When es_idx <= ed_idx the start falls back to frame 0 (frames 0..ES are still
+    the contraction approaching ES, though frame 0 is not the true ED).
     """
     if img_arr.ndim != 4:
         return ([], [], []) if return_slice_idxs else ([], [])
 
     T, Z, _, _ = img_arr.shape
-    if es_idx <= ed_idx or es_idx >= T or ed_idx < 0:
+    # Systole window is normally [ED, ES); when ES <= ED the true (most-dilated)
+    # ED lies *after* ES in the cine, so fall back to frame 0 as a stand-in start.
+    sys_start = ed_idx if 0 <= ed_idx < es_idx else 0
+    if es_idx <= sys_start or es_idx >= T:
         return ([], [], []) if return_slice_idxs else ([], [])
 
     images, target_frames, slice_idxs = [], [], []
@@ -299,7 +304,7 @@ def extract_consecutive_pairs_systole(img_arr, mask_arr, ed_idx, es_idx,
         processed = [normalize_frame_to_rgb(slice_seq[t], p1, p99, 0, 0, target_size)
                      for t in range(T)]
 
-        for t in range(ed_idx, es_idx):
+        for t in range(sys_start, es_idx):
             images.append(processed[t])
             target_frames.append(processed[t + 1])
             slice_idxs.append(z)
@@ -387,9 +392,11 @@ def load_acdc_data(base_dir, target_size=(128, 128), restrict_to_systole=False):
             except (KeyError, ValueError) as e:
                 print(f"Skipping ACDC {p}: missing ED/ES ({e})")
                 continue
-            if es_idx <= ed_idx:
-                print(f"Skipping ACDC {p}: ES ({es_idx}) <= ED ({ed_idx})")
+            if es_idx <= 0:
+                print(f"Skipping ACDC {p}: ES ({es_idx}) has no preceding systolic frames")
                 continue
+            if es_idx <= ed_idx:
+                print(f"ACDC {p}: ES ({es_idx}) <= ED ({ed_idx}); systole fallback uses frames 0..ES")
 
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
         if not os.path.exists(nii_path):
@@ -431,9 +438,11 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128), restrict_to_
         ed_idx = es_idx = None
         if restrict_to_systole:
             ed_idx, es_idx = nor_info[subject_id]
-            if es_idx <= ed_idx:
-                print(f"Skipping M&M {subject_id}: ES ({es_idx}) <= ED ({ed_idx})")
+            if es_idx <= 0:
+                print(f"Skipping M&M {subject_id}: ES ({es_idx}) has no preceding systolic frames")
                 continue
+            if es_idx <= ed_idx:
+                print(f"M&M {subject_id}: ES ({es_idx}) <= ED ({ed_idx}); systole fallback uses frames 0..ES")
 
         nii_path = os.path.join(mm_training_dir, fname)
         if not os.path.exists(nii_path):
@@ -580,9 +589,11 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42, restrict_
             except (KeyError, ValueError) as e:
                 print(f"Skipping ACDC {p}: missing ED/ES ({e})")
                 continue
-            if es_idx <= ed_idx:
-                print(f"Skipping ACDC {p}: ES ({es_idx}) <= ED ({ed_idx})")
+            if es_idx <= 0:
+                print(f"Skipping ACDC {p}: ES ({es_idx}) has no preceding systolic frames")
                 continue
+            if es_idx <= ed_idx:
+                print(f"ACDC {p}: ES ({es_idx}) <= ED ({ed_idx}); systole fallback uses frames 0..ES")
 
         nii_path = os.path.join(p_dir, f'{p}_4d.nii.gz')
         if not os.path.exists(nii_path):
@@ -635,9 +646,11 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128), restri
             if ed_idx is None:
                 print(f"Skipping M&M {subject_id}: not in CSV (no ED/ES)")
                 continue
-            if es_idx <= ed_idx:
-                print(f"Skipping M&M {subject_id}: ES ({es_idx}) <= ED ({ed_idx})")
+            if es_idx <= 0:
+                print(f"Skipping M&M {subject_id}: ES ({es_idx}) has no preceding systolic frames")
                 continue
+            if es_idx <= ed_idx:
+                print(f"M&M {subject_id}: ES ({es_idx}) <= ED ({ed_idx}); systole fallback uses frames 0..ES")
 
         nii_path = os.path.join(mm_val_dir, fname)
         if not os.path.exists(nii_path):
@@ -995,8 +1008,8 @@ def load_reconstructed_sax_data_next_frame_rgb(recon_root, target_size=(128, 128
     target_size : tuple  (H, W) resize target, default (128, 128).
     restrict_to_systole : bool
         If True, emit only pairs (t, t+1) for t ∈ [ed_idx, es_idx − 1]
-        (systolic contraction).  Cases missing from ed_es_csv or with es ≤ ed
-        are skipped.
+        (systolic contraction).  Cases missing from ed_es_csv are skipped.  When
+        es ≤ ed the window falls back to frames 0..ES; only es_idx == 0 is skipped.
     ed_es_csv : str | None
         Path to segmentation/ed_es_frames.csv.  Required when
         restrict_to_systole=True; ignored otherwise.
@@ -1030,9 +1043,11 @@ def load_reconstructed_sax_data_next_frame_rgb(recon_root, target_size=(128, 128
                 print(f"Skipping Recon {case_id}: not in ED/ES CSV.")
                 continue
             ed_idx, es_idx = ed_es_map[case_id]
-            if es_idx <= ed_idx:
-                print(f"Skipping Recon {case_id}: ES ({es_idx}) <= ED ({ed_idx})")
+            if es_idx <= 0:
+                print(f"Skipping Recon {case_id}: ES ({es_idx}) has no preceding systolic frames")
                 continue
+            if es_idx <= ed_idx:
+                print(f"Recon {case_id}: ES ({es_idx}) <= ED ({ed_idx}); systole fallback uses frames 0..ES")
 
         cine = np.load(os.path.join(recon_root, fname))  # (T, Z, H, W)
         if cine.ndim != 4:
