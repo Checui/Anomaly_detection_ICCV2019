@@ -257,7 +257,7 @@ def train_Unet_naive_with_batch_norm(training_es_images, training_ed_images, max
     wandb.init(
         project="mres-ICCV2019",
         name=f"{dataset_name}_rgb_e{start_model_idx}-{max_epoch}",
-        tags=["rgb", dataset_name],
+        tags=["rgb", dataset_name[:64]],  # W&B caps each tag at 64 chars; full name kept in group/config
         group=dataset_name,
         config={
             "batch_size": batch_size,

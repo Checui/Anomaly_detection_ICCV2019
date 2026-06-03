@@ -253,7 +253,7 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
     wandb.init(
         project="mres-ICCV2019",
         name=f"{dataset_name}_flow_e{start_model_idx}-{max_epoch}",
-        tags=["flow", dataset_name],
+        tags=["flow", dataset_name[:64]],  # W&B caps each tag at 64 chars; full name kept in group/config
         group=dataset_name,
         config={
             "batch_size": batch_size,
