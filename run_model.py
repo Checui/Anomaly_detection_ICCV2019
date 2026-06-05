@@ -125,6 +125,21 @@ if __name__ == "__main__":
                         help='Assumed RECON in-plane spacing in mm/px (no header on disk). '
                              'Default 2.0.')
 
+    # ── N4ITK bias-field correction ──────────────────────────────────────────
+    parser.add_argument('--n4_bias_correct', action='store_true',
+                        help='Apply N4ITK bias-field correction to every volume '
+                             '(train / val / test) as the FIRST loader step, before '
+                             'orientation / spacing / percentile normalisation. The '
+                             'field is estimated once per (patient, z-slice) from the '
+                             'temporal-mean frame and shared across all frames.')
+    parser.add_argument('--n4_shrink', type=int, default=4,
+                        help='Downsample factor for N4 field estimation (default 4). '
+                             'Higher = faster, slightly coarser field.')
+    parser.add_argument('--n4_iterations', type=int, default=50,
+                        help='Max N4 iterations per fitting level (default 50).')
+    parser.add_argument('--n4_levels', type=int, default=4,
+                        help='Number of N4 B-spline fitting levels (default 4).')
+
     args = parser.parse_args()
 
     if 'RECON' in args.datasets and args.recon_dir is None:
@@ -157,6 +172,18 @@ if __name__ == "__main__":
     else:
         dl_flow.set_spacing_normalization(False)
         dl_rgb.set_spacing_normalization(False)
+
+    # ── Enable N4 bias-field correction in both loaders (no-op when off) ──────
+    # Runs FIRST inside each loader (before orientation/spacing); the set order
+    # here is irrelevant since these only flip module-level globals.
+    if args.n4_bias_correct:
+        print(f"[run_model] N4 bias-field correction ON, shrink={args.n4_shrink}, "
+              f"iters={args.n4_iterations}, levels={args.n4_levels}")
+        dl_flow.set_n4_bias_correction(True, args.n4_shrink, args.n4_iterations, args.n4_levels)
+        dl_rgb.set_n4_bias_correction(True, args.n4_shrink, args.n4_iterations, args.n4_levels)
+    else:
+        dl_flow.set_n4_bias_correction(False)
+        dl_rgb.set_n4_bias_correction(False)
 
     # ── ED/ES direction (only meaningful for ed_es / es_ed frame modes) ───────
     # "es_ed" reuses the ed_es loaders but flips which phase is the model input:

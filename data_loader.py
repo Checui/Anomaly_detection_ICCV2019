@@ -84,6 +84,44 @@ def _maybe_resample_volume(volume, spacing_xy):
     return _spacing_apply_to_volume(volume, spacing_xy)
 
 
+# ── N4ITK bias-field correction (opt-in) ────────────────────────────────────
+# Corrects low-frequency MRI intensity inhomogeneity on the raw volume FIRST —
+# before orientation / spacing / percentile normalisation.  The field is
+# estimated once per (patient, z-slice) from the temporal-mean frame and applied
+# to all T frames, so frame-to-frame dynamics (and thus optical flow) survive.
+try:
+    from n4_bias_correction import (
+        apply_to_volume as _n4_apply_to_volume,
+        is_enabled as _n4_is_enabled,
+        set_n4_bias_correction as _n4_set_correction,
+    )
+    _N4_AVAILABLE = True
+except ImportError:
+    _N4_AVAILABLE = False
+    def _n4_apply_to_volume(volume):
+        return volume
+    def _n4_is_enabled():
+        return False
+    def _n4_set_correction(*args, **kwargs):
+        pass
+
+
+def set_n4_bias_correction(enabled, shrink_factor=4, n_iterations=50,
+                           n_fitting_levels=4):
+    """Toggle N4 bias-field correction. Call before any load_* function."""
+    if not _N4_AVAILABLE:
+        if enabled:
+            print("[data_loader] n4_bias_correction unavailable; skipping correction.")
+        return
+    _n4_set_correction(enabled, shrink_factor, n_iterations, n_fitting_levels)
+
+
+def _maybe_n4_correct_volume(volume):
+    if not _n4_is_enabled() or volume is None:
+        return volume
+    return _n4_apply_to_volume(volume)
+
+
 # ── ED/ES extraction direction ──────────────────────────────────────────────
 #
 # Controls which cardiac phase is the model INPUT when extracting ED/ES pairs.
@@ -259,6 +297,7 @@ def load_acdc_data(base_dir, target_size=(128, 128), restrict_to_systole=False):
             print(f"Skipping ACDC {p}: ES={es_idx} out of range T={T}")
             continue
 
+        img_arr = _maybe_n4_correct_volume(img_arr)
         img_arr = _maybe_normalize_volume(img_arr, p)
         img_arr = _maybe_resample_volume(img_arr, spacing_xy)
         for z in _middle_slice_range(Z):
@@ -400,6 +439,7 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128), restrict_to_
             print(f"Skipping M&M {subject_id}: ES={es_idx} out of range T={T}")
             continue
 
+        img_arr = _maybe_n4_correct_volume(img_arr)
         img_arr = _maybe_normalize_volume(img_arr, subject_id)
         img_arr = _maybe_resample_volume(img_arr, spacing_xy)
         for z in _middle_slice_range(Z):
@@ -598,6 +638,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             continue
 
         print(f"ACDC {p} (NOR)  ED={ed_idx}  ES={es_idx}")
+        img_arr = _maybe_n4_correct_volume(img_arr)
         img_arr = _maybe_normalize_volume(img_arr, p)
         img_arr = _maybe_resample_volume(img_arr, spacing_xy)
         for z in _middle_slice_range(Z):
@@ -667,6 +708,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             continue
 
         print(f"M&M {subject_id} (NOR)  ED={ed_idx}  ES={es_idx}")
+        img_arr = _maybe_n4_correct_volume(img_arr)
         img_arr = _maybe_normalize_volume(img_arr, subject_id)
         img_arr = _maybe_resample_volume(img_arr, spacing_xy)
         for z in _middle_slice_range(Z):
@@ -769,6 +811,7 @@ def load_reconstructed_sax_data(recon_root, ed_es_csv, target_size=(128, 128)):
 
         print(f"Recon {case_id}  ED={ed_idx}  ES={es_idx}")
         spacing_xy = _spacing_recon_default()
+        cine = _maybe_n4_correct_volume(cine)
         cine = _maybe_normalize_volume(cine, case_id)
         cine = _maybe_resample_volume(cine, spacing_xy)
         for z in _middle_slice_range(Z):
@@ -952,6 +995,7 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42,
 
         images, flows, labels, pids, slice_idxs = [], [], [], [], []
 
+        img_arr = _maybe_n4_correct_volume(img_arr)
         img_arr = _maybe_normalize_volume(img_arr, p)
         img_arr = _maybe_resample_volume(img_arr, spacing_xy)
         for z in _middle_slice_range(Z):
@@ -1121,6 +1165,7 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128),
             continue
         print(f"Processing {subject_id} ({pathology})...")
 
+        img_arr = _maybe_n4_correct_volume(img_arr)
         img_arr = _maybe_normalize_volume(img_arr, subject_id)
         img_arr = _maybe_resample_volume(img_arr, spacing_xy)
         for z in _middle_slice_range(Z):
@@ -1297,6 +1342,7 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
         images, flows, labels, pids, slice_idxs = [], [], [], [], []
         print(f"  {p} ({group})  ED={ed_idx}  ES={es_idx}")
 
+        img_arr = _maybe_n4_correct_volume(img_arr)
         img_arr = _maybe_normalize_volume(img_arr, p)
         img_arr = _maybe_resample_volume(img_arr, spacing_xy)
         for z in _middle_slice_range(Z):
@@ -1441,6 +1487,7 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
 
         print(f"  {subject_id} ({pathology})  ED={ed_idx}  ES={es_idx}")
 
+        img_arr = _maybe_n4_correct_volume(img_arr)
         img_arr = _maybe_normalize_volume(img_arr, subject_id)
         img_arr = _maybe_resample_volume(img_arr, spacing_xy)
         for z in _middle_slice_range(Z):
@@ -1572,6 +1619,7 @@ def load_acdc_ed_es_data(acdc_dir, target_size=(128, 128)):
             continue
 
         print(f"ACDC {p} (NOR)  ED={ed_idx}  ES={es_idx}")
+        img_arr = _maybe_n4_correct_volume(img_arr)
         img_arr = _maybe_normalize_volume(img_arr, p)
         img_arr = _maybe_resample_volume(img_arr, spacing_xy)
         for z in _middle_slice_range(Z):
@@ -1651,6 +1699,7 @@ def load_mm_ed_es_data(mm_training_dir, csv_path, target_size=(128, 128)):
             continue
 
         print(f"M&M {subject_id} (NOR)  ED={ed_idx}  ES={es_idx}")
+        img_arr = _maybe_n4_correct_volume(img_arr)
         img_arr = _maybe_normalize_volume(img_arr, subject_id)
         img_arr = _maybe_resample_volume(img_arr, spacing_xy)
         for z in _middle_slice_range(Z):
@@ -1772,6 +1821,7 @@ def load_reconstructed_sax_data_next_frame(recon_root, target_size=(128, 128),
 
         print(f"Recon {case_id}  T={T}  Z={Z}")
         spacing_xy = _spacing_recon_default()
+        cine = _maybe_n4_correct_volume(cine)
         cine = _maybe_normalize_volume(cine, case_id)
         cine = _maybe_resample_volume(cine, spacing_xy)
         for z in _middle_slice_range(Z):

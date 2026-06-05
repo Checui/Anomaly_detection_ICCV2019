@@ -49,7 +49,7 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 # Run your Python training script
 # Note: Ensure the paths (--acdc_dir, --mm_dir, --mm_csv) perfectly match where 
 # you placed them in your ephemeral storage relative to this script.
-VERSION="v1_orient_spacing"
+VERSION="v1_orient_spacing_n4"
 
 # IMPORTANT: --orient_normalize requires
 #   ../reconstructed_sax_images_training_2023/segmentation/orientation_params.csv
@@ -71,6 +71,7 @@ python run_model.py \
     --recon_dir ../reconstructed_sax_images_training_2023 \
     --orient_normalize \
     --spacing_normalize \
+    --n4_bias_correct \
     --epochs 100 \
     --start_epoch 0 \
     --run_tag "${VERSION}"

@@ -44,6 +44,15 @@ Optional spacing-normalisation flags (default off, both loaders pass-through whe
 | `--target_size` | `128` (px) | Output side length. With default spacing this is a 192 mm box. |
 | `--recon_spacing` | `2.0` (mm/px) | Assumed in-plane spacing for RECON `.npy` volumes (no NIfTI header on disk). Cleanest place to override if upstream reconstruction changes. |
 
+Optional N4ITK bias-field-correction flags (default off, both loaders pass-through when disabled). Runs **first** in the loader pipeline — on the raw volume, before orientation / spacing / percentile normalisation:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--n4_bias_correct` | off | Apply N4ITK bias-field correction to every volume (train / val / test). The multiplicative field is estimated **once per (patient, z-slice)** from the temporal-mean frame and divided into **all T frames** of that slice, so frame-to-frame intensity dynamics (and thus optical flow) are preserved. Degenerate slices (empty Otsu mask / N4 failure) pass through unchanged. |
+| `--n4_shrink` | `4` | Downsample factor for the field-estimation grid (auto-clamped so the grid stays ≥ 16 px/side). Higher = faster, slightly coarser field. |
+| `--n4_iterations` | `50` | Max N4 iterations per fitting level. |
+| `--n4_levels` | `4` | Number of B-spline fitting levels. |
+
 ```bash
 # Flow model, ACDC + MM, ED/ES pairs (the main cardiac MRI experiment)
 python run_model.py --model_type flow --datasets ACDC MM --frame_mode ed_es --epochs 100 \
@@ -173,6 +182,14 @@ In all pipelines, `μ_*` are the mean per-sample scores computed over the **enti
 - Percentile normalisation is still computed per-slice on the cropped output (`np.percentile(slice_seq, [1, 99])`). Less background after the crop means the p1/p99 range is tighter — usually slightly better dynamic range. Watch for it if motion thresholds need re-tuning.
 - Patients with non-isotropic in-plane spacing (`sx != sy`) get a non-uniform scale factor, which the existing `cv2.resize` handles. All ACDC and M&Ms cardiac SAX scans are in-plane isotropic in practice.
 - Visual QC: `python spacing_qc.py` writes `Anomaly_detection_ICCV2019/spacing_qc.png` with one row per source × three columns (raw / oriented / oriented+spacing). The heart should look the same physical size in the right column across all rows.
+
+**N4ITK bias-field correction (opt-in via `--n4_bias_correct`):**
+- Implementation: `n4_bias_correction.py` (loader side, `SimpleITK` + `numpy`). Exposes `set_n4_bias_correction(enabled, shrink_factor, n_iterations, n_fitting_levels)` + `apply_to_volume(volume)`. Both loaders wrap it as `_maybe_n4_correct_volume(volume)`, called at every load site **before** `_maybe_normalize_volume` (orientation). In `data_loader_rgb.py` the call for ACDC/M&M lives inside `load_and_orient_sitk()` (gated on `case_id is not None`, so segmentation masks `*_gt.nii.gz` are never corrected); the two RECON `np.load` sites are patched explicitly.
+- **Order in the pipeline is fixed**: N4 first (raw intensities), then orientation, then spacing, then per-slice percentile normalisation. N4 is geometry-independent, so running it before rotation/resample is purely a matter of operating on the rawest data.
+- **Field shared across time, per slice**: for a 4D `(T, Z, H, W)` volume the bias field is estimated once per z-slice from the temporal-mean frame (higher SNR), then divided into all T frames. This is ~T× cheaper than per-frame N4 and, crucially for the flow head, leaves frame-to-frame intensity differences intact — a per-frame field would inject brightness flicker that Farneback flow reads as spurious motion. 3D `(Z, H, W)` arrays are corrected slice-by-slice; 2D `(H, W)` as a single frame.
+- Per-2D-slice (not full-3D) matches the existing per-slice percentile normalisation, so any residual inter-slice brightness offset is washed out downstream.
+- Fallback semantics: a slice with an empty Otsu foreground mask, a constant/degenerate frame, or any N4 exception is returned unchanged (no-op for that slice). If `SimpleITK` or the module is missing, both loaders print a notice and pass volumes through. So enabling the flag is always safe.
+- Cost: one-time at load (not per-epoch). Roughly Z_used (~6) N4 fits per patient; with the default `shrink=4` this is a few minutes across the full train+val+test set. Tune `--n4_shrink` / `--n4_iterations` / `--n4_levels` if needed.
 
 **ED/ES frame index conventions (per dataset):**
 - **ACDC** — `Info.cfg` stores `ED` and `ES` as **1-based** indices. All loaders must subtract 1 before indexing into numpy arrays (e.g. `ed_idx = int(info['ED']) - 1`).
