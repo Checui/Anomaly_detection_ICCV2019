@@ -5,7 +5,7 @@
 # -----------------------------------------------------------------------------
 
 # Give your job a descriptive name
-#PBS -N Train_NextFrameSystole
+#PBS -N Train_Registration_EDES
 
 # Request the maximum time you think the job will take (HH:MM:SS)
 # Maximum limit on Imperial HPC is usually 72:00:00. Here we request 24 hours.
@@ -55,7 +55,7 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 # Run your Python training script
 # Note: Ensure the paths (--acdc_dir, --mm_dir, --mm_csv) perfectly match where 
 # you placed them in your ephemeral storage relative to this script.
-VERSION="v1_orient_spacing_n4"
+VERSION="registration_ed_es"
 
 # IMPORTANT: --orient_normalize requires
 #   ../reconstructed_sax_images_training_2023/segmentation/orientation_params.csv
@@ -63,13 +63,26 @@ VERSION="v1_orient_spacing_n4"
 # local workstation, e.g.
 #   scp orientation_params.csv user@hpc:/path/to/reconstructed_sax_images_training_2023/segmentation/
 # ).  Without the CSV the flag silently no-ops per patient (pass-through).
+#
+# REGISTRATION aux target (--aux_source registration):
+#   * --reg_repo points at the biomechanics repo (network.py + checkpoints/ckpt_best.pth).
+#     On the HPC that folder is 'biomechanics-cardiac-motion-hpc' (NOT the local name), so
+#     the sibling path below is required — the code's default would not resolve here.
+#   * ed_es on ACDC+MM is the domain the reg-net was fine-tuned/validated on (Dice 0.762);
+#     next_frame_systole / RECON are out-of-domain AND far slower (the reg-net runs once per
+#     frame pair on CPU at data-load — thousands of pairs would take hours before training).
+#   * needs PyTorch in the env (see note above). Checkpoints land in ..._FLOW_NOR_REG_${VERSION}.
+# For an apples-to-apples Farneback baseline, rerun this block with --aux_source flow
+# (drop --reg_repo) and a different --run_tag.
 
-echo "--- Starting Model Training: Flow, next_frame_systole pairs, all datasets (version: ${VERSION}) ---"
+echo "--- Starting Model Training: Flow head, REGISTRATION aux target, ED/ES, ACDC+MM (version: ${VERSION}) ---"
 
 python run_model.py \
     --model_type flow \
-    --datasets ACDC MM RECON \
-    --frame_mode next_frame_systole \
+    --aux_source registration \
+    --reg_repo ../biomechanics-cardiac-motion-hpc \
+    --datasets ACDC MM \
+    --frame_mode ed_es \
     --acdc_dir ../Dataset_2 \
     --mm_dir ../Dataset_1/Training \
     --mm_val_dir ../Dataset_1/Validation \
