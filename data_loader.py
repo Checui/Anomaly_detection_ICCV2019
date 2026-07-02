@@ -157,6 +157,36 @@ def _edes_flow_inputs(ed_rgb, es_rgb, ed_gray, es_gray):
     return es_rgb, es_gray, ed_gray
 
 
+# ── Dense-flow backend: 'farneback' (default) or 'registration' ─────────────────
+# Set once per run by run_model.py via set_flow_backend(). 'registration' routes the
+# aux-head GT target through the fine-tuned biomechanics Registration_Net
+# (registration_flow.py) instead of Farneback; the return format is identical
+# ((H, W, 2) float32 [dx, dy]), so the magnitude channel, static-slice filter and
+# np.dstack packing downstream are all unchanged.
+_FLOW_BACKEND = 'farneback'
+
+
+def set_flow_backend(backend):
+    """Select the dense-flow source for the aux target: 'farneback' or 'registration'."""
+    global _FLOW_BACKEND
+    b = str(backend).lower()
+    _FLOW_BACKEND = 'registration' if b in ('registration', 'reg') else 'farneback'
+
+
+def _dense_flow(prev_gray, next_gray, *farneback_args):
+    """Dense prev->next displacement, (H, W, 2) float32 [dx, dy].
+
+    Drop-in for cv2.calcOpticalFlowFarneback with the identical call signature, so
+    every existing call site is unchanged. In 'registration' mode the trailing
+    Farneback params are ignored and the field comes from the biomechanics teacher
+    (torch is imported lazily there, so a pure Farneback run never needs torch).
+    """
+    if _FLOW_BACKEND == 'registration':
+        from registration_flow import registration_flow
+        return registration_flow(prev_gray, next_gray)
+    return cv2.calcOpticalFlowFarneback(prev_gray, next_gray, *farneback_args)
+
+
 def _read_nifti_4d(nii_path):
     """Load a NIfTI file, returning (array, (sx, sy)) in mm/px.
 
@@ -351,7 +381,7 @@ def load_acdc_data(base_dir, target_size=(128, 128), restrict_to_systole=False):
 
                 # Calc Dense Optical Flow
                 try:
-                    flow = cv2.calcOpticalFlowFarneback(prev_gray, next_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
+                    flow = _dense_flow(prev_gray, next_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
                 except Exception as e:
                     print(f"Flow failed: {e}")
                     continue
@@ -480,7 +510,7 @@ def load_mm_data(mm_training_dir, csv_path, target_size=(128, 128), restrict_to_
                 next_gray = (processed_frames_arr[t+1, :, :, 0] * 255).astype(np.uint8)
 
                 try:
-                    flow = cv2.calcOpticalFlowFarneback(
+                    flow = _dense_flow(
                         prev_gray, next_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0
                     )
                 except Exception as e:
@@ -654,7 +684,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_frame_rgb, es_frame_rgb, ed_gray, es_gray)
 
             try:
-                flow = cv2.calcOpticalFlowFarneback(
+                flow = _dense_flow(
                     src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {p} z={z}: {e}")
@@ -724,7 +754,7 @@ def load_combined_ed_es_data(acdc_dir, mm_training_dir, csv_path,
             input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_frame_rgb, es_frame_rgb, ed_gray, es_gray)
 
             try:
-                flow = cv2.calcOpticalFlowFarneback(
+                flow = _dense_flow(
                     src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {subject_id} z={z}: {e}")
@@ -826,7 +856,7 @@ def load_reconstructed_sax_data(recon_root, ed_es_csv, target_size=(128, 128)):
             ed_gray = (ed_rgb[:, :, 0] * 255).astype(np.uint8)
             input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_rgb, es_rgb, ed_gray, es_gray)
             try:
-                flow = cv2.calcOpticalFlowFarneback(
+                flow = _dense_flow(
                     src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {case_id} z={z}: {e}")
@@ -1029,7 +1059,7 @@ def load_acdc_test_val_data(base_dir, target_size=(128, 128), seed=42,
                 next_gray = (processed_frames_arr[t+1, :, :, 0] * 255).astype(np.uint8)
 
                 try:
-                    flow = cv2.calcOpticalFlowFarneback(
+                    flow = _dense_flow(
                         prev_gray, next_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0
                     )
                 except Exception as e:
@@ -1199,7 +1229,7 @@ def load_mm_validation_data(mm_val_dir, csv_path, target_size=(128, 128),
                 next_gray = (processed_frames_arr[t+1, :, :, 0] * 255).astype(np.uint8)
 
                 try:
-                    flow = cv2.calcOpticalFlowFarneback(
+                    flow = _dense_flow(
                         prev_gray, next_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0
                     )
                 except Exception as e:
@@ -1358,7 +1388,7 @@ def load_acdc_test_val_ed_es_data(base_dir, target_size=(128, 128), seed=42):
             input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_rgb, es_rgb, ed_gray, es_gray)
 
             try:
-                flow = cv2.calcOpticalFlowFarneback(
+                flow = _dense_flow(
                     src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {p} z={z}: {e}")
@@ -1503,7 +1533,7 @@ def load_mm_validation_ed_es_data(mm_val_dir, csv_path, target_size=(128, 128)):
             input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_rgb, es_rgb, ed_gray, es_gray)
 
             try:
-                flow = cv2.calcOpticalFlowFarneback(
+                flow = _dense_flow(
                     src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {subject_id} z={z}: {e}")
@@ -1635,7 +1665,7 @@ def load_acdc_ed_es_data(acdc_dir, target_size=(128, 128)):
             input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_rgb, es_rgb, ed_gray, es_gray)
 
             try:
-                flow = cv2.calcOpticalFlowFarneback(
+                flow = _dense_flow(
                     src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {p} z={z}: {e}")
@@ -1715,7 +1745,7 @@ def load_mm_ed_es_data(mm_training_dir, csv_path, target_size=(128, 128)):
             input_rgb, src_gray, dst_gray = _edes_flow_inputs(ed_rgb, es_rgb, ed_gray, es_gray)
 
             try:
-                flow = cv2.calcOpticalFlowFarneback(
+                flow = _dense_flow(
                     src_gray, dst_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
             except Exception as e:
                 print(f"Flow error {subject_id} z={z}: {e}")
@@ -1840,7 +1870,7 @@ def load_reconstructed_sax_data_next_frame(recon_root, target_size=(128, 128),
                 next_gray = (processed_frames[t + 1][:, :, 0] * 255).astype(np.uint8)
 
                 try:
-                    flow = cv2.calcOpticalFlowFarneback(
+                    flow = _dense_flow(
                         prev_gray, next_gray, None, 0.5, 3, 7, 3, 5, 1.2, 0)
                 except Exception as e:
                     print(f"Flow error {case_id} z={z} t={t}: {e}")

@@ -45,6 +45,12 @@ conda install -c conda-forge cudatoolkit=11.8.0 cudnn -y
 # IMPORTANT: Replace 'mres_env' with the name of the conda environment you created on the HPC
 source activate mres_env
 
+# NOTE: for --aux_source registration, this env also needs PyTorch (CPU build is enough —
+# the reg-net runs on CPU). Install it ONCE on the LOGIN node (compute nodes have no
+# internet), then it persists for all jobs:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# Not required for --aux_source flow (Farneback) or --model_type rgb.
+
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 # Run your Python training script
 # Note: Ensure the paths (--acdc_dir, --mm_dir, --mm_csv) perfectly match where 

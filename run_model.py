@@ -40,6 +40,26 @@ if __name__ == "__main__":
             'frame instead of optical flow (GAN_tf_rgb).'
         )
     )
+    parser.add_argument(
+        '--aux_source', type=str, default='flow',
+        choices=['flow', 'registration'],
+        help=(
+            'Source of the flow-head GT target (only used when --model_type flow). '
+            '"flow" (default): dense optical flow via cv2.calcOpticalFlowFarneback. '
+            '"registration": dense field from the fine-tuned biomechanics '
+            'Registration_Net used as a frozen teacher (registration_flow.py). '
+            'Same GAN, same losses; only the aux target changes. Ignored for '
+            '--model_type rgb (future-frame prediction).'
+        )
+    )
+    parser.add_argument('--reg_repo', type=str, default=None,
+                        help='Path to the biomechanics repo (network.py + checkpoints). '
+                             'Defaults to the sibling ../Biomechanics-informed-motion-tracking. '
+                             'Only used when --aux_source registration.')
+    parser.add_argument('--reg_ckpt', type=str, default=None,
+                        help='Path to the fine-tuned registration checkpoint. '
+                             'Defaults to <reg_repo>/checkpoints/ckpt_best.pth. '
+                             'Only used when --aux_source registration.')
 
     # ── Dataset / frame mode ──────────────────────────────────────────────────
     parser.add_argument(
@@ -198,6 +218,20 @@ if __name__ == "__main__":
     print(f"[run_model] frame_mode={args.frame_mode} (ED/ES input phase: "
           f"{'ED' if edes_direction == 'ed' else 'ES'})")
 
+    # ── Flow-head aux target: Farneback optical flow (default) or registration ──
+    # The registration teacher only applies to the flow backend; the rgb backend
+    # predicts the ED frame directly and ignores --aux_source.
+    if args.model_type == 'flow' and args.aux_source == 'registration':
+        import registration_flow
+        registration_flow.configure(reg_repo=args.reg_repo, reg_ckpt=args.reg_ckpt)
+        dl_flow.set_flow_backend('registration')
+        print("[run_model] aux target = REGISTRATION (fine-tuned biomechanics teacher)")
+    else:
+        dl_flow.set_flow_backend('farneback')
+        if args.model_type == 'rgb' and args.aux_source == 'registration':
+            print("[run_model] NOTE: --aux_source registration is ignored for "
+                  "--model_type rgb (future-frame prediction).")
+
     # ------------------------------------------------------------------
     # 1. Build per-dataset loader dispatch tables
     # ------------------------------------------------------------------
@@ -270,6 +304,8 @@ if __name__ == "__main__":
     train_part2 = np.concatenate(part2_list, axis=0)
 
     dataset_name = '_'.join(args.datasets) + '_' + args.frame_mode.upper() + '_' + args.model_type.upper() + '_NOR'
+    if args.model_type == 'flow' and args.aux_source == 'registration':
+        dataset_name = dataset_name + '_REG'   # keep registration runs in a separate checkpoint folder
     if args.run_tag:
         dataset_name = dataset_name + '_' + args.run_tag
     print(f"\nTotal training samples: {len(train_part1)}")

@@ -9,4 +9,7 @@ ipykernel
 imageio
 SimpleITK
 pandas
-wandb 
+wandb
+# Only for --aux_source registration (biomechanics motion teacher). Not installed by
+# default (CUDA build is ~2GB). Install a CPU-only build on the login node:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
