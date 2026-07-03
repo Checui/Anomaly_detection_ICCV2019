@@ -472,6 +472,33 @@ def compute_patch_scores(diff_maps_flow, diff_maps_appe, size=16, step=4):
     return patch_flow, patch_appe
 
 
+def compute_flow_ssim_scores(flows_true, flows_hat):
+    """Per-sample flow anomaly scores from SSIM (higher = more anomalous).
+
+    Mirrors the SSIM computed in calc_measures_single_item (nested there, so not
+    importable): data_range = max-min over both arrays, channel_axis=-1. The offline
+    sweep in run_model.ipynb found these the strongest single-stream disease detectors
+    (flow__SSIM / mag__SSIM + patient_mean). Returns two arrays over the batch:
+      flow_ssim : 1 - SSIM over all channels ([dx, dy, mag])  -> the 'flow__SSIM' stream
+      mag_ssim  : 1 - SSIM over the last (magnitude) channel   -> the 'mag__SSIM' stream
+    1 - SSIM is rank-equivalent to -SSIM for AUC (SSIM is a "higher = more normal"
+    metric) and stays non-negative.
+
+    Returns (flow_ssim, mag_ssim) each of shape (N,).
+    """
+    n = len(flows_true)
+    flow_ssim = np.zeros(n)
+    mag_ssim  = np.zeros(n)
+    for k in range(n):
+        gt, pr = flows_true[k], flows_hat[k]
+        dr = float(np.max([gt, pr]) - np.min([gt, pr])) or 1.0
+        flow_ssim[k] = 1.0 - ssim(gt, pr, data_range=dr, channel_axis=-1)
+        gt_m, pr_m = gt[..., -1], pr[..., -1]
+        dr_m = float(np.max([gt_m, pr_m]) - np.min([gt_m, pr_m])) or 1.0
+        mag_ssim[k] = 1.0 - ssim(gt_m, pr_m, data_range=dr_m)
+    return flow_ssim, mag_ssim
+
+
 def calc_score_max_patch_one_clip(dataset, epoch, clip_idx, step=4, train=False, force_calc=False):
     saved_data_path = './training_saver/%s/output_%s/%d_epoch' % (dataset['name'], 'train' if train else 'test', epoch)
     saved_score_file = '%s/patch_score_epoch_%d_clip_%d_step_%d.npz' % (saved_data_path, epoch, clip_idx + 1, step)

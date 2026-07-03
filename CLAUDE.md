@@ -115,13 +115,15 @@ Both files share the same layer primitives (`conv2d`, `conv_transpose`, `conv2d_
 - `loss_aux`: L1 loss between predicted flow and GT flow (`GAN_tf`); MSE + gradient loss between predicted ED and GT ED frame (`GAN_tf_rgb`).
 - Default weights: `lw_adv=0.25, lw_appe=1.0, lw_aux=2.0` (passed as kwargs to `train_Unet_naive_with_batch_norm`; exposed as `--lw_adv / --lw_appe / --lw_aux` in `run_model.py`).
 
-**Anomaly scoring at validation** — three parallel scoring pipelines run every validation epoch:
+**Anomaly scoring at validation** — several parallel scoring pipelines run every validation epoch:
 
 **Full-frame:** per-sample `loss_appe` and `loss_aux` reduced over all spatial dims. Combined score (original ICCV2019 paper formula, matching `utils.py:339`):
 ```
 combined = log(loss_appe / μ_appe) + 2 × log(loss_aux / μ_aux)
 ```
 `eps`/`np.maximum` guards are applied to each term so a zero error can't produce `log(0) → NaN` and break `roc_auc_score`. Logged to W&B as `Val_AUC_Appearance`, `Val_AUC_Flow` / `Val_AUC_ED`, `Val_AUC_Combined`.
+
+**Flow-SSIM (`GAN_tf` only; not in the paper):** an alternative flow-stream anomaly score. `utils.compute_flow_ssim_scores()` computes per-sample `1 − SSIM(pred_flow, gt_flow)` (`data_range = max−min`, `channel_axis=-1`, mirroring the SSIM in the nested `utils.calc_measures_single_item`) for the full 3-channel flow field and, separately, the magnitude channel — `1 − SSIM` is rank-equivalent to `−SSIM` (SSIM is higher = more normal) and stays ≥ 0. The offline `run_model.ipynb` "Comprehensive Score-Way" sweep found this the **strongest single-stream disease detector** (`flow__SSIM` / `mag__SSIM` + patient-level `Mean` ≈ 0.73–0.77), clearly above the L1 `loss_aux` AUC. The predicted-flow tensor `output_opt` is fetched in the val `sess.run`; SSIM is a numpy/skimage post-step against the `val_flows` GT. Logged as `Val_AUC_Flow_SSIM` / `Val_AUC_Mag_SSIM`, with the same per-disease (`Val_AUC_<DISEASE>_Flow_SSIM` / `_Mag_SSIM`), per-dataset (`Val_AUC_Dataset_<DS>_Flow_SSIM` / `_Mag_SSIM`), and patient-level (`Val_AUC_Patient_<agg>_Flow_SSIM` / `_Mag_SSIM`) breakdowns as the L1 flow metric. Being rank-based it needs no `μ` baseline, so it runs on the **val set only** (no combined-SSIM score, and the training-set eval pass is untouched). Printed as `[VAL-AUC-SSIM]` / `[VAL-AUC-DS-SSIM-<DS>]` / `[VAL-AUC-PAT-SSIM-<agg>]`. `GAN_tf_rgb` (RGB aux head) is not covered.
 
 **Patch-based (paper Section 3.5):** raw 2D MSE diff maps `[B, H, W]` computed by reducing over channels only. `compute_patch_scores()` in `utils.py` wraps `find_max_patch()` (16×16 patch, stride 4) to select the patch with highest mean auxiliary MSE, then reads appearance MSE at that same position. `find_max_patch`'s sliding window covers the full frame (loop bound `shape − size + 1`, so the edge-flush patch is included). Combined score is the paper's eq. (8) with `𝒮 = 0.2` on the appearance term (flow/aux-dominant 5:1):
 ```

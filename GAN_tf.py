@@ -10,7 +10,7 @@ import numpy as np
 import tensorflow as tf
 from scipy.io import savemat, loadmat
 
-from utils import load_images_and_flow_1clip, compute_patch_scores
+from utils import load_images_and_flow_1clip, compute_patch_scores, compute_flow_ssim_scores
 # from plot_entire_one_frame import flow_to_color
 
 from ProgressBar import ProgressBar
@@ -515,10 +515,13 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 per_sample_opt  = np.zeros(len(val_images))
                 per_sample_appe_patch = np.zeros(len(val_images))
                 per_sample_opt_patch  = np.zeros(len(val_images))
+                # SSIM-based flow scores (offline sweep winner; higher = more anomalous)
+                per_sample_opt_ssim = np.zeros(len(val_images))
+                per_sample_mag_ssim = np.zeros(len(val_images))
 
                 for vb in val_batch_idx:
-                    ps_appe_vals, ps_opt_vals, raw_f, raw_a = sess.run(
-                        [ps_loss_appe, ps_loss_opt, raw_diff_map_flow, raw_diff_map_appe],
+                    ps_appe_vals, ps_opt_vals, raw_f, raw_a, pred_flow = sess.run(
+                        [ps_loss_appe, ps_loss_opt, raw_diff_map_flow, raw_diff_map_appe, output_opt],
                         feed_dict={
                             plh_frame_true: val_images[vb],
                             plh_flow_true:  val_flows[vb],
@@ -531,6 +534,9 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                     pf, pa = compute_patch_scores(raw_f, raw_a)
                     per_sample_opt_patch[vb]  = pf
                     per_sample_appe_patch[vb] = pa
+                    _fs, _ms = compute_flow_ssim_scores(val_flows[vb], pred_flow)
+                    per_sample_opt_ssim[vb] = _fs
+                    per_sample_mag_ssim[vb] = _ms
 
                 # ── Combined loss ────────────────────────────────────────
                 epoch_val_appe = np.mean(per_sample_appe)
@@ -544,9 +550,16 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 val_unhealthy_appe = val_unhealthy_opt = np.nan
                 auc_appe = auc_opt = auc_combined = np.nan
                 auc_appe_patch = auc_opt_patch = auc_combined_patch = np.nan
+                auc_flow_ssim = auc_mag_ssim = np.nan
                 patient_aucs = {}
                 per_disease_pat_aucs = {}
                 _per_dataset_aucs = {}
+                _per_disease_flow_ssim = {}
+                _per_disease_mag_ssim  = {}
+                _per_dataset_flow_ssim = {}
+                _per_dataset_mag_ssim  = {}
+                patient_ssim_aucs = {}
+                per_disease_pat_ssim_aucs = {}
 
                 if val_labels is not None and len(val_labels) == len(val_images):
                     labels_arr = np.array(val_labels)
@@ -597,6 +610,15 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                         except ValueError as e:
                             print(f'  [VAL-AUC] could not compute: {e}')
 
+                        # ── SSIM-based flow AUC (offline sweep winner) ───────
+                        try:
+                            auc_flow_ssim = roc_auc_score(binary_labels, per_sample_opt_ssim)
+                            auc_mag_ssim  = roc_auc_score(binary_labels, per_sample_mag_ssim)
+                            print('  [VAL-AUC-SSIM] flow_ssim = %.4f, mag_ssim = %.4f'
+                                  % (auc_flow_ssim, auc_mag_ssim))
+                        except ValueError as e:
+                            print(f'  [VAL-AUC-SSIM] could not compute: {e}')
+
                         # ── Patch-based AUC (mirrors paper Section 3.5) ──────
                         try:
                             auc_appe_patch = roc_auc_score(binary_labels, per_sample_appe_patch)
@@ -629,6 +651,13 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                                           % (_disease, _auc_d_appe, _auc_d_aux))
                                 except ValueError:
                                     pass
+                                try:
+                                    _per_disease_flow_ssim[_disease] = roc_auc_score(
+                                        _bin_d, per_sample_opt_ssim[_mask_d])
+                                    _per_disease_mag_ssim[_disease] = roc_auc_score(
+                                        _bin_d, per_sample_mag_ssim[_mask_d])
+                                except ValueError:
+                                    pass
 
                         # ── Per-dataset AUC (NOR vs rest within each dataset) ─
                         if (val_dataset_ids is not None
@@ -644,6 +673,15 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                                         _per_dataset_aucs[_ds] = (_auc_ds_appe, _auc_ds_aux)
                                         print('  [VAL-AUC-DS-%s] appe = %.4f, flow = %.4f  (%d samples)'
                                               % (_ds, _auc_ds_appe, _auc_ds_aux, np.sum(_mask_ds)))
+                                    except ValueError:
+                                        pass
+                                    try:
+                                        _auc_ds_fssim = roc_auc_score(_bin_ds, per_sample_opt_ssim[_mask_ds])
+                                        _auc_ds_mssim = roc_auc_score(_bin_ds, per_sample_mag_ssim[_mask_ds])
+                                        _per_dataset_flow_ssim[_ds] = _auc_ds_fssim
+                                        _per_dataset_mag_ssim[_ds]  = _auc_ds_mssim
+                                        print('  [VAL-AUC-DS-SSIM-%s] flow_ssim = %.4f, mag_ssim = %.4f'
+                                              % (_ds, _auc_ds_fssim, _auc_ds_mssim))
                                     except ValueError:
                                         pass
 
@@ -687,29 +725,47 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                             aggs = ['Mean', 'FrameMax', 'FrameTop20', 'SliceMax', 'SliceTop20']
                             pat_appe = {a: np.zeros(len(unique_pids)) for a in aggs}
                             pat_opt  = {a: np.zeros(len(unique_pids)) for a in aggs}
+                            pat_flow_ssim = {a: np.zeros(len(unique_pids)) for a in aggs}
+                            pat_mag_ssim  = {a: np.zeros(len(unique_pids)) for a in aggs}
                             pat_labels_list = []
                             for pi, pid in enumerate(unique_pids):
                                 m = (pids_arr == pid)
                                 a_p = per_sample_appe[m]
                                 o_p = per_sample_opt[m]
+                                f_p = per_sample_opt_ssim[m]
+                                g_p = per_sample_mag_ssim[m]
                                 s_p = slcs_arr[m]
                                 pat_appe['Mean'][pi]       = float(np.mean(a_p))
                                 pat_opt['Mean'][pi]        = float(np.mean(o_p))
+                                pat_flow_ssim['Mean'][pi]  = float(np.mean(f_p))
+                                pat_mag_ssim['Mean'][pi]   = float(np.mean(g_p))
                                 pat_appe['FrameMax'][pi]   = float(np.max(a_p))
                                 pat_opt['FrameMax'][pi]    = float(np.max(o_p))
+                                pat_flow_ssim['FrameMax'][pi] = float(np.max(f_p))
+                                pat_mag_ssim['FrameMax'][pi]  = float(np.max(g_p))
                                 pat_appe['FrameTop20'][pi] = _top20_mean(a_p)
                                 pat_opt['FrameTop20'][pi]  = _top20_mean(o_p)
-                                slice_a, slice_o = [], []
+                                pat_flow_ssim['FrameTop20'][pi] = _top20_mean(f_p)
+                                pat_mag_ssim['FrameTop20'][pi]  = _top20_mean(g_p)
+                                slice_a, slice_o, slice_f, slice_g = [], [], [], []
                                 for s in np.unique(s_p):
                                     sm = (s_p == s)
                                     slice_a.append(float(np.mean(a_p[sm])))
                                     slice_o.append(float(np.mean(o_p[sm])))
+                                    slice_f.append(float(np.mean(f_p[sm])))
+                                    slice_g.append(float(np.mean(g_p[sm])))
                                 slice_a = np.array(slice_a)
                                 slice_o = np.array(slice_o)
+                                slice_f = np.array(slice_f)
+                                slice_g = np.array(slice_g)
                                 pat_appe['SliceMax'][pi]   = float(np.max(slice_a))
                                 pat_opt['SliceMax'][pi]    = float(np.max(slice_o))
+                                pat_flow_ssim['SliceMax'][pi] = float(np.max(slice_f))
+                                pat_mag_ssim['SliceMax'][pi]  = float(np.max(slice_g))
                                 pat_appe['SliceTop20'][pi] = _top20_mean(slice_a)
                                 pat_opt['SliceTop20'][pi]  = _top20_mean(slice_o)
+                                pat_flow_ssim['SliceTop20'][pi] = _top20_mean(slice_f)
+                                pat_mag_ssim['SliceTop20'][pi]  = _top20_mean(slice_g)
                                 pat_labels_list.append(labels_arr[m][0])
                             pat_labels_arr = np.array(pat_labels_list)
                             pat_binary = (pat_labels_arr != 'NOR').astype(int)
@@ -729,6 +785,14 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                                               % (a, _aa, _ao, _ac))
                                     except ValueError:
                                         pass
+                                    try:
+                                        _af = roc_auc_score(pat_binary, pat_flow_ssim[a])
+                                        _ag = roc_auc_score(pat_binary, pat_mag_ssim[a])
+                                        patient_ssim_aucs[a] = {'flow_ssim': _af, 'mag_ssim': _ag}
+                                        print('  [VAL-AUC-PAT-SSIM-%s] flow_ssim = %.4f, mag_ssim = %.4f'
+                                              % (a, _af, _ag))
+                                    except ValueError:
+                                        pass
 
                                 for _disease in sorted(np.unique(pat_labels_arr)):
                                     if _disease == 'NOR':
@@ -737,11 +801,18 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                                     _bd = (pat_labels_arr[_md] != 'NOR').astype(int)
                                     if np.any(_bd) and not np.all(_bd):
                                         per_disease_pat_aucs[_disease] = {}
+                                        per_disease_pat_ssim_aucs[_disease] = {}
                                         for a in aggs:
                                             try:
                                                 _da = roc_auc_score(_bd, pat_appe[a][_md])
                                                 _dx = roc_auc_score(_bd, pat_opt[a][_md])
                                                 per_disease_pat_aucs[_disease][a] = (_da, _dx)
+                                            except ValueError:
+                                                pass
+                                            try:
+                                                _df = roc_auc_score(_bd, pat_flow_ssim[a][_md])
+                                                _dg = roc_auc_score(_bd, pat_mag_ssim[a][_md])
+                                                per_disease_pat_ssim_aucs[_disease][a] = (_df, _dg)
                                             except ValueError:
                                                 pass
 
@@ -758,6 +829,9 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                     log_dict["Val_AUC_Appearance"] = auc_appe
                     log_dict["Val_AUC_Flow"]       = auc_opt
                     log_dict["Val_AUC_Combined"]   = auc_combined
+                if not np.isnan(auc_flow_ssim):
+                    log_dict["Val_AUC_Flow_SSIM"] = auc_flow_ssim
+                    log_dict["Val_AUC_Mag_SSIM"]  = auc_mag_ssim
                 if not np.isnan(auc_appe_patch):
                     log_dict["Val_AUC_Appe_Patch"]     = auc_appe_patch
                     log_dict["Val_AUC_Flow_Patch"]     = auc_opt_patch
@@ -765,9 +839,17 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                 for _disease, (_auc_da, _auc_dx) in _per_disease_aucs.items():
                     log_dict[f'Val_AUC_{_disease}_Appearance'] = _auc_da
                     log_dict[f'Val_AUC_{_disease}_Flow']       = _auc_dx
+                for _disease, _auc_dfs in _per_disease_flow_ssim.items():
+                    log_dict[f'Val_AUC_{_disease}_Flow_SSIM'] = _auc_dfs
+                for _disease, _auc_dms in _per_disease_mag_ssim.items():
+                    log_dict[f'Val_AUC_{_disease}_Mag_SSIM'] = _auc_dms
                 for _ds, (_auc_dsa, _auc_dsx) in _per_dataset_aucs.items():
                     log_dict[f'Val_AUC_Dataset_{_ds}_Appearance'] = _auc_dsa
                     log_dict[f'Val_AUC_Dataset_{_ds}_Flow']       = _auc_dsx
+                for _ds, _auc_dsfs in _per_dataset_flow_ssim.items():
+                    log_dict[f'Val_AUC_Dataset_{_ds}_Flow_SSIM'] = _auc_dsfs
+                for _ds, _auc_dsms in _per_dataset_mag_ssim.items():
+                    log_dict[f'Val_AUC_Dataset_{_ds}_Mag_SSIM'] = _auc_dsms
                 log_dict['Val_AUC_BestCombined'] = _best_auc
                 log_dict['Val_BestWeight_Appe']  = _best_w
                 # Patient-level AUCs
@@ -775,10 +857,17 @@ def train_Unet_naive_with_batch_norm(training_images, training_flows, max_epoch,
                     log_dict[f'Val_AUC_Patient_{_a}_Appearance'] = _scores['appe']
                     log_dict[f'Val_AUC_Patient_{_a}_Flow']       = _scores['opt']
                     log_dict[f'Val_AUC_Patient_{_a}_Combined']   = _scores['combined']
+                for _a, _scores in patient_ssim_aucs.items():
+                    log_dict[f'Val_AUC_Patient_{_a}_Flow_SSIM'] = _scores['flow_ssim']
+                    log_dict[f'Val_AUC_Patient_{_a}_Mag_SSIM']  = _scores['mag_ssim']
                 for _disease, _aggs in per_disease_pat_aucs.items():
                     for _a, (_da, _dx) in _aggs.items():
                         log_dict[f'Val_AUC_Patient_{_a}_{_disease}_Appearance'] = _da
                         log_dict[f'Val_AUC_Patient_{_a}_{_disease}_Flow']       = _dx
+                for _disease, _aggs in per_disease_pat_ssim_aucs.items():
+                    for _a, (_df, _dg) in _aggs.items():
+                        log_dict[f'Val_AUC_Patient_{_a}_{_disease}_Flow_SSIM'] = _df
+                        log_dict[f'Val_AUC_Patient_{_a}_{_disease}_Mag_SSIM']  = _dg
 
                 # ── Healthy vs Unhealthy combined charts ──────────────────
                 if not np.isnan(val_healthy_appe) and not np.isnan(val_unhealthy_appe):
