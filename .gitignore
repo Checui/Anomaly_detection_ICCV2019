@@ -2,8 +2,16 @@
 # 1. Virtual Environments (Don't upload your whole Python setup)
 # ==========================================
 venv/
+.venv/
 env/
 .env
+
+# ==========================================
+# 1b. Experiment outputs & large notebook backups
+# ==========================================
+derisk_out/
+*.bak
+*.bak2
 
 # ==========================================
 # 2. Datasets and Images (Don't upload massive data files)

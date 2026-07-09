@@ -1,0 +1,70 @@
+#!/bin/bash
+
+# =============================================================================
+# De-risking experiment: do FROZEN CineMA features already separate cardiac
+# disease from NOR?  (No decoder training — Mahalanobis / kNN on NOR features.)
+# See MAE_CineMA_feasibility_memo.md and derisk_cinema.py.
+# =============================================================================
+
+#PBS -N Derisk_CineMA
+#PBS -l walltime=04:00:00
+# Small job: 1 GPU speeds CineMA's 3-D forward pass; CPU-only also works (slower).
+#PBS -l select=1:ncpus=8:mem=64gb:ngpus=1
+#PBS -m ea
+#PBS -M cc4525@imperial.ac.uk
+
+cd $PBS_O_WORKDIR
+echo "Job started on $(date)"
+echo "Running on node: $(hostname)"
+
+# -----------------------------------------------------------------------------
+# Conda env  (same activation pattern as submit_job.pbs)
+# -----------------------------------------------------------------------------
+source ~/miniconda/bin/activate
+
+# One-time setup ON THE LOGIN NODE (compute nodes have no internet):
+#   conda create -n derisk python=3.10 -y && conda activate derisk
+#   # CUDA build to use the GPU (matches CUDA/11.8 below); or the CPU build if running CPU-only:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu118
+#   git clone https://github.com/mathpluscode/CineMA ../CineMA
+#   pip install -e ../CineMA                       # pulls monai, safetensors, timm, etc.
+#   pip install scikit-learn scikit-image opencv-python-headless pandas SimpleITK
+source activate derisk
+
+# CUDA only needed for a CUDA torch build; harmless for the CPU build.
+module load CUDA/11.8.0
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+
+# -----------------------------------------------------------------------------
+# CineMA weights: pre-download ONCE on the LOGIN node into $HF_HOME, then this
+# job reads them offline. On the login node run:
+#   export HF_HOME=$EPHEMERAL/hf_cache
+#   python -c "from cinema import CineMA; CineMA.from_pretrained()"
+# -----------------------------------------------------------------------------
+export HF_HOME=${HF_HOME:-$EPHEMERAL/hf_cache}
+export HF_HUB_OFFLINE=1        # force offline; fail loudly if the cache is missing
+
+echo "--- Running CineMA de-risking experiment ---"
+
+# Data paths match submit_job.pbs (datasets one level up from this repo).
+# For an apples-to-apples comparison with the orient+spacing+n4 GAN runs, add:
+#     --orient_normalize --spacing_normalize --n4_bias_correct
+# (--orient_normalize also needs
+#  ../reconstructed_sax_images_training_2023/segmentation/orientation_params.csv,
+#  which is NOT in the git repo — scp it over first, else the flag no-ops.)
+python derisk_cinema.py \
+    --acdc_dir ../Dataset_2 \
+    --mm_dir ../Dataset_1/Training \
+    --mm_val_dir ../Dataset_1/Validation \
+    --mm_csv "../Dataset_1/211230_M&Ms_Dataset_information_diagnosis_opendataset.csv" \
+    --fit_datasets ACDC MM \
+    --val_datasets ACDC MM \
+    --sax_fill zero \
+    --feature_layers all \
+    --batch_size 4 \
+    --knn_k 5 \
+    --out_dir ./derisk_out
+
+echo "--- Finished ---"
+echo "Job finished on $(date)"
+echo "Results: ./derisk_out/derisk_results.json"
